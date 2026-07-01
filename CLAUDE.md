@@ -15,6 +15,23 @@ Hlktech. Устройство периодически шлёт сырые Modbu
 зависимости на месте (axum, tokio, prometheus, serde/serde_norway и др.),
 `edition = "2024"`; проект собирается, тестируется и развёрнут.
 
+Реализованы также: **кулоновский счётчик** (charge/discharge amp-hours, интеграл
+тока по времени), **self-observability метрики** (`http_requests`,
+`frames_decoded`, `frames_dropped`, `last_frame_timestamp`), **device_info**.
+Есть **Grafana-дашборд** (`grafana/`), **деплой** (`scripts/deploy.sh`,
+`make deploy`/`make grafana` на aarch64-хост), **CI/Release**
+(`.github/workflows/`, `deny.toml`).
+
+**Инвариант безопасности (не ломать при правках):** вход — untrusted, без auth.
+Держать:
+
+- ограничение кардинальности метрик (`Config::accept_serial` +
+  `is_plausible_serial` + `Metrics::admit` / `max_devices`);
+- санитизацию логов — untrusted-строки логировать через `?`-Debug, не
+  `%`-Display;
+- bounds-checked декодирование (`regs.get()`, клампы `MAX_CELLS` / `MAX_TEMPS`);
+- `#![forbid(unsafe_code)]`.
+
 ## Команды
 
 ```bash
@@ -25,9 +42,13 @@ cargo test -- --nocapture         # с выводом println!
 cargo clippy --all-targets        # линт
 cargo fmt                         # форматирование
 cargo run                         # запуск бинаря
+cargo deny check                  # аудит зависимостей/лицензий (deny.toml)
+make deb                          # сборка .deb-пакета
+make deploy REMOTE=<host>         # деплой на aarch64-хост (scripts/deploy.sh)
+make grafana REMOTE=<host>        # установка Grafana-дашборда на хост
 ```
 
-## Архитектура (замысел)
+## Архитектура и поток данных
 
 Полная спецификация протокола — `doc/daly-bms-protocol.md` (единственный источник
 истины по декодированию; читать перед любой работой с парсером).
@@ -48,10 +69,14 @@ cargo run                         # запуск бинаря
    блока и применять формулы из doc:
    - блок `0x0000` (запрос `D2 03 00 00 00 7E`) — realtime (§4);
    - блок `0x0080` (запрос `D2 03 00 80 00 70`) — конфигурация (§5).
-4. **Prometheus-экспозиция.** Отдельный `/metrics`-эндпоинт (или тот же сервер),
-   отдающий последний распарсенный снимок.
+4. **Prometheus-экспозиция.** **Один axum-сервер** обслуживает и приём POST'ов
+   от устройства, и `GET {metrics_path}` (по умолчанию `/metrics`), отдающий
+   последний распарсенный снимок, и `GET /healthz` (health-check).
 
-Конфиг — YAML через `serde` (адрес/порт приёмника, адрес `/metrics`, и т.п.).
+Конфиг — YAML через **`serde_norway`** (поддерживаемый форк архивного
+`serde_yaml`); поля: `listen`, `metrics_path`, `log_level`, `allowed_serials`,
+`max_body_bytes`, `request_timeout_secs`, `coulomb_max_gap_secs`, `max_devices`
+(см. `config.example.yaml`).
 
 ## Ключевые правила декодирования (легко ошибиться)
 

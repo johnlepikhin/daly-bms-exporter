@@ -6,10 +6,13 @@ use serde::Deserialize;
 /// Body of `POST /api/v2/http2/SaveThingInfo1`.
 #[derive(Debug, Deserialize)]
 pub struct TelemetryBody {
+    /// Aliyun device name.
     #[serde(rename = "DeviceName", default)]
     pub device_name: String,
+    /// BMS serial, used as the metric label.
     #[serde(rename = "Sn")]
     pub sn: String,
+    /// The request→response Modbus pairs.
     #[serde(rename = "Data", default)]
     pub data: Vec<DataEntry>,
 }
@@ -23,6 +26,7 @@ pub struct DataEntry {
     /// Hex of the Modbus response (the actual register data).
     #[serde(rename = "Data")]
     pub data: String,
+    /// Device epoch-millis timestamp (currently unused).
     #[serde(rename = "TimeStamp", default)]
     pub timestamp: Option<String>,
 }

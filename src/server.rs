@@ -21,9 +21,12 @@ use crate::metrics::Metrics;
 use crate::modbus;
 use crate::payload::TelemetryBody;
 
+/// Shared state passed to every request handler.
 #[derive(Clone)]
 pub struct AppState {
+    /// The exporter's metric registry.
     pub metrics: Arc<Metrics>,
+    /// Runtime configuration.
     pub config: Arc<Config>,
 }
 

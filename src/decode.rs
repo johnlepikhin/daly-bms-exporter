@@ -149,7 +149,9 @@ fn ascii(regs: &[u16], start: usize, end: usize) -> Option<String> {
 /// A protection threshold stored as a `(warning, protection)` pair (§5.2).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Limits {
+    /// Warning-level threshold value.
     pub warning: Option<f64>,
+    /// Protection-level threshold value.
     pub protection: Option<f64>,
 }
 
@@ -201,6 +203,8 @@ pub struct RealtimeData {
 }
 
 impl RealtimeData {
+    /// Decode a realtime (0x0000) register block. Total: never panics on short
+    /// or garbage input — absent registers yield `None`.
     pub fn from_registers(regs: &[u16]) -> Self {
         // `reg` reads by absolute register index into the parsed vector.
         let reg = |addr: usize| regs.get(addr).copied();
@@ -294,6 +298,8 @@ pub struct ConfigData {
 }
 
 impl ConfigData {
+    /// Decode a config (0x0080) register block. Total: never panics on short
+    /// or garbage input — absent registers yield `None`.
     pub fn from_registers(regs: &[u16]) -> Self {
         // `reg` reads by absolute config address (0x80..); the parsed vector
         // starts at the block base, so index == addr - CFG_BASE.

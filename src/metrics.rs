@@ -133,6 +133,16 @@ fn register_counter_vec(reg: &Registry, name: &str, help: &str, labels: &[&str])
 }
 
 impl Metrics {
+    /// Construct the metric registry and all metric families.
+    ///
+    /// `coulomb_max_gap_secs` caps the coulomb-counter integration interval
+    /// (seconds); `max_devices` is a hard cap on distinct tracked serials
+    /// (`0` = unlimited).
+    ///
+    /// # Panics
+    ///
+    /// Panics only at startup if a metric name is duplicate or invalid (a
+    /// programming bug).
     #[expect(clippy::too_many_lines)]
     pub fn new(coulomb_max_gap_secs: f64, max_devices: usize) -> Self {
         let r = Registry::new();
@@ -579,16 +589,19 @@ impl Metrics {
         entry.last_current = Some(cur);
     }
 
+    /// Record the outcome of an HTTP request (endpoint, status).
     pub fn record_request(&self, endpoint: &str, status: u16) {
         self.http_requests
             .with_label_values(&[endpoint, &status.to_string()])
             .inc();
     }
 
+    /// Count a successfully decoded frame by block.
     pub fn record_decoded(&self, block: &str) {
         self.frames_decoded.with_label_values(&[block]).inc();
     }
 
+    /// Count a dropped frame by reason.
     pub fn record_dropped(&self, reason: &str) {
         self.frames_dropped.with_label_values(&[reason]).inc();
     }

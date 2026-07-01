@@ -541,11 +541,11 @@ impl Metrics {
     /// the `seen` lock so the metric mutation stays serialized with `entry`.
     fn set_device_info(&self, entry: &mut LastSeries, labels: [String; 5]) {
         let refs = labels.each_ref().map(String::as_str);
-        if let Some(old) = &entry.last_device_info {
-            if *old != labels {
-                let old_refs = old.each_ref().map(String::as_str);
-                let _ = self.device_info.remove_label_values(&old_refs);
-            }
+        if let Some(old) = &entry.last_device_info
+            && *old != labels
+        {
+            let old_refs = old.each_ref().map(String::as_str);
+            let _ = self.device_info.remove_label_values(&old_refs);
         }
         self.device_info.with_label_values(&refs).set(1);
         entry.last_device_info = Some(labels);

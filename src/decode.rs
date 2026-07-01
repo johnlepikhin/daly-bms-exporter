@@ -213,20 +213,20 @@ impl RealtimeData {
         let cell_count = reg(REG_CELL_COUNT).unwrap_or(0).min(MAX_CELLS) as usize;
         let mut cells_v = Vec::new();
         for slot in 0..cell_count {
-            if let Some(mv) = reg(REG_CELL_BASE + slot) {
-                if mv != 0 {
-                    cells_v.push((slot as u32 + 1, cell_volts(mv)));
-                }
+            if let Some(mv) = reg(REG_CELL_BASE + slot)
+                && mv != 0
+            {
+                cells_v.push((slot as u32 + 1, cell_volts(mv)));
             }
         }
 
         let temp_count = reg(REG_TEMP_COUNT).unwrap_or(0).min(MAX_TEMPS) as usize;
         let mut temps_c = Vec::new();
         for slot in 0..temp_count {
-            if let Some(raw) = reg(REG_TEMP_BASE + slot) {
-                if raw != 0 {
-                    temps_c.push((slot as u32 + 1, celsius(raw)));
-                }
+            if let Some(raw) = reg(REG_TEMP_BASE + slot)
+                && raw != 0
+            {
+                temps_c.push((slot as u32 + 1, celsius(raw)));
             }
         }
 

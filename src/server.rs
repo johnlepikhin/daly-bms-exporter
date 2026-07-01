@@ -152,10 +152,10 @@ fn handle_entry(st: &AppState, sn: &str, command: &str, data: &str) -> Result<()
             let d = RealtimeData::from_registers(&regs);
             // The realtime block carries the pack serial; warn if it disagrees
             // with the body's Sn (the label source of truth).
-            if let Some(decoded) = &d.serial {
-                if decoded != sn {
-                    warn!(body_sn = ?sn, decoded_sn = ?decoded, "serial mismatch");
-                }
+            if let Some(decoded) = &d.serial
+                && decoded != sn
+            {
+                warn!(body_sn = ?sn, decoded_sn = ?decoded, "serial mismatch");
             }
             debug!(
                 sn = ?sn,

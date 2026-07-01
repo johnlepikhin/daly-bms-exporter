@@ -1,0 +1,43 @@
+# daly-bms-exporter configuration (YAML). All fields are optional; omitted keys
+# fall back to the defaults shown below. A missing config file is not an error.
+
+# Address:port the exporter binds to — receives device POSTs AND serves /metrics.
+# The Hlktech module POSTs to port 80 of www.databms.com, so either bind here to
+# :80 (needs CAP_NET_BIND_SERVICE) or DNAT :80 -> this port. See README.
+listen: "0.0.0.0:8080"
+
+# Path Prometheus scrapes.
+metrics_path: "/metrics"
+
+# Default log filter when RUST_LOG is unset (error|warn|info|debug|trace, or a
+# full tracing-subscriber EnvFilter directive).
+log_level: "info"
+
+# Optional allowlist of accepted BMS serials. When set, telemetry from any other
+# serial is dropped — this bounds metric cardinality against untrusted input.
+# Omit or leave null to accept any plausible (ASCII-alphanumeric) serial.
+#
+# In untrusted networks, set this to your known device serials. The device cap
+# (max_devices, below) is first-come and slots are never evicted, so with
+# allowed_serials unset an unauthenticated flood of distinct plausible serials
+# can exhaust max_devices and permanently lock out real devices.
+# allowed_serials:
+#   - "224KE220900366"
+
+# Reject request bodies larger than this (bytes). Real bodies are ~1.2 KB.
+max_body_bytes: 65536
+
+# Per-request timeout (seconds).
+request_timeout_secs: 10
+
+# Coulomb counter: cap the integration interval between frames (seconds). If the
+# device goes offline longer than this, the gap is not integrated with a stale
+# current reading. ~2x the device's post interval plus margin is a good value.
+coulomb_max_gap_secs: 900
+
+# Hard cap on the number of distinct devices (serials) tracked, bounding metric
+# cardinality / memory against untrusted Sn values. 0 = unlimited. This cap is
+# first-come and slots are never evicted: without allowed_serials, a flood of
+# distinct serials can fill it and starve real devices — set allowed_serials
+# (above) on untrusted networks.
+max_devices: 64

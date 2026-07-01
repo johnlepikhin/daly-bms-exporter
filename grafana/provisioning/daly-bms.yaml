@@ -1,0 +1,14 @@
+apiVersion: 1
+providers:
+  # NOTE: on ratzek the default/anonymous org that users actually see is orgId 2
+  # (not 1). All existing dashboards + the Prometheus datasource live there, so
+  # the dashboard MUST be provisioned into org 2 or it is invisible in the UI.
+  - name: daly-bms-org2
+    orgId: 2
+    folder: ""
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

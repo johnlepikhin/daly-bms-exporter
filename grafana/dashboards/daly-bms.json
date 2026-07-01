@@ -1,0 +1,467 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "tags": ["bms", "daly"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      },
+      {
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "includeAll": true,
+        "label": "Device (sn)",
+        "multi": true,
+        "name": "sn",
+        "query": { "query": "label_values(daly_bms_pack_voltage_volts, sn)", "refId": "A" },
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "timezone": "",
+  "title": "Daly BMS",
+  "uid": "daly-bms",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    { "type": "row", "id": 1, "title": "Fleet overview", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+
+    {
+      "type": "stat", "id": 2, "title": "SOC",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 15 }, { "color": "green", "value": 40 } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_soc_percent{sn=~\"$sn\"}", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 3, "title": "Pack voltage",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "volt", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_pack_voltage_volts{sn=~\"$sn\"}", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 4, "title": "Current",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "amp", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null }, { "color": "green", "value": 0 } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_current_amperes{sn=~\"$sn\"}", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 5, "title": "Power",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "watt", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null }, { "color": "green", "value": 0 } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_pack_voltage_volts{sn=~\"$sn\"} * on(sn) daly_bms_current_amperes{sn=~\"$sn\"}", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 6, "title": "Last seen (age)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 300 }, { "color": "red", "value": 600 } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "time() - daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"}", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 7, "title": "Cycles",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "text", "value": null } ] } }, "overrides": [] },
+      "options": { "colorMode": "none", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_charge_cycles{sn=~\"$sn\"}", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "table", "id": 8, "title": "Devices",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 5 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_device_info{sn=~\"$sn\"}", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [
+        { "id": "labelsToFields", "options": {} },
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "Value": true, "__name__": true, "instance": true, "job": true }, "indexByName": { "sn": 0, "serial": 1, "machine_code": 2, "sw_version": 3, "hw_version": 4 } } }
+      ]
+    },
+
+    { "type": "row", "id": 10, "title": "Pack — time series", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 } },
+
+    {
+      "type": "timeseries", "id": 11, "title": "SOC %",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_soc_percent{sn=~\"$sn\"}", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "id": 12, "title": "Pack voltage",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "volt", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_pack_voltage_volts{sn=~\"$sn\"}", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "id": 13, "title": "Current",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "amp", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never", "axisSoftMin": 0 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_current_amperes{sn=~\"$sn\"}", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "id": 14, "title": "Power (W)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 20 },
+      "fieldConfig": { "defaults": { "unit": "watt", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_pack_voltage_volts{sn=~\"$sn\"} * on(sn) daly_bms_current_amperes{sn=~\"$sn\"}", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "id": 15, "title": "Remaining capacity (Ah)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 20 },
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*rated.*" }, "properties": [ { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 6] } }, { "id": "custom.fillOpacity", "value": 0 } ] } ] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_remaining_capacity_amp_hours{sn=~\"$sn\"}", "legendFormat": "{{sn}} remaining", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_rated_capacity_amp_hours{sn=~\"$sn\"}", "legendFormat": "{{sn}} rated", "refId": "B" }
+      ]
+    },
+
+    { "type": "row", "id": 20, "title": "Cells — $sn", "collapsed": false, "repeat": "sn", "repeatDirection": "h", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 28 } },
+
+    {
+      "type": "timeseries", "id": 21, "title": "Cell voltages — $sn",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 29 },
+      "fieldConfig": { "defaults": { "unit": "volt", "custom": { "drawStyle": "line", "fillOpacity": 0, "showPoints": "never", "lineWidth": 1 } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": "(max|min|avg)" }, "properties": [ { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [6, 6] } }, { "id": "custom.lineWidth", "value": 2 } ] } ] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "min", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_cell_voltage_volts{sn=\"$sn\"}", "legendFormat": "cell {{cell}}", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_cell_voltage_max_volts{sn=\"$sn\"}", "legendFormat": "max", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_cell_voltage_min_volts{sn=\"$sn\"}", "legendFormat": "min", "refId": "C" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_cell_voltage_avg_volts{sn=\"$sn\"}", "legendFormat": "avg", "refId": "D" }
+      ]
+    },
+    {
+      "type": "bargauge", "id": 22, "title": "Cell voltages now — $sn",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 12, "y": 29 },
+      "fieldConfig": { "defaults": { "unit": "volt", "min": 0, "color": { "mode": "continuous-GrYlRd" } }, "overrides": [] },
+      "options": { "orientation": "horizontal", "displayMode": "gradient", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showUnfilled": true },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_cell_voltage_volts{sn=\"$sn\"}", "legendFormat": "cell {{cell}}", "refId": "A", "instant": true } ]
+    },
+    {
+      "type": "stat", "id": 23, "title": "Cell delta — $sn",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 4, "x": 20, "y": 29 },
+      "fieldConfig": { "defaults": { "unit": "volt", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 0.05 }, { "color": "red", "value": 0.1 } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_cell_voltage_delta_volts{sn=\"$sn\"}", "legendFormat": "delta", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "id": 24, "title": "Balancing — $sn",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 37 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byName", "options": "balance current (A)" }, "properties": [ { "id": "unit", "value": "amp" } ] }, { "matcher": { "id": "byName", "options": "balancing cells" }, "properties": [ { "id": "unit", "value": "none" } ] } ] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_balance_current_amperes{sn=\"$sn\"}", "legendFormat": "balance current (A)", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_balancing_cell_count{sn=\"$sn\"}", "legendFormat": "balancing cells", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 25, "title": "Cell delta (trend) — $sn",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 37 },
+      "fieldConfig": { "defaults": { "unit": "volt", "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 0.05 }, { "color": "red", "value": 0.1 } ] }, "color": { "mode": "thresholds" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_cell_voltage_delta_volts{sn=\"$sn\"}", "legendFormat": "delta", "refId": "A" } ]
+    },
+
+    { "type": "row", "id": 30, "title": "Temps & state — $sn", "collapsed": false, "repeat": "sn", "repeatDirection": "h", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 } },
+
+    {
+      "type": "timeseries", "id": 31, "title": "Temperatures — $sn",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 },
+      "fieldConfig": { "defaults": { "unit": "celsius", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_temperature_celsius{sn=\"$sn\"}", "legendFormat": "sensor {{sensor}}", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_mos_temperature_celsius{sn=\"$sn\"}", "legendFormat": "MOS", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_temperature_max_celsius{sn=\"$sn\"}", "legendFormat": "max", "refId": "C" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_temperature_min_celsius{sn=\"$sn\"}", "legendFormat": "min", "refId": "D" }
+      ]
+    },
+    {
+      "type": "state-timeline", "id": 32, "title": "MOS / balancer — $sn",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 44 },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 80 }, "mappings": [ { "type": "value", "options": { "0": { "text": "off", "color": "red", "index": 0 }, "1": { "text": "on", "color": "green", "index": 1 } } } ], "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "showValue": "auto", "mergeValues": true, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_charge_mos{sn=\"$sn\"}", "legendFormat": "charge MOS", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_discharge_mos{sn=\"$sn\"}", "legendFormat": "discharge MOS", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_balancer_active{sn=\"$sn\"}", "legendFormat": "balancer active", "refId": "C" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_balance_enable{sn=\"$sn\"}", "legendFormat": "balance enable", "refId": "D" }
+      ]
+    },
+    {
+      "type": "state-timeline", "id": 33, "title": "Alarms — $sn",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 48 },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 80 }, "mappings": [ { "type": "value", "options": { "0": { "text": "ok", "color": "green", "index": 0 }, "1": { "text": "ALARM", "color": "red", "index": 1 } } } ], "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "showValue": "auto", "mergeValues": true, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_alarm{sn=\"$sn\"}", "legendFormat": "{{type}}", "refId": "A" } ]
+    },
+    {
+      "type": "table", "id": 34, "title": "Protection limits — $sn",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 52 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_cell_voltage_high_limit_volts{sn=\"$sn\"}", "format": "table", "instant": true, "legendFormat": "cell high (V)", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_cell_voltage_low_limit_volts{sn=\"$sn\"}", "format": "table", "instant": true, "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_pack_voltage_high_limit_volts{sn=\"$sn\"}", "format": "table", "instant": true, "refId": "C" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_pack_voltage_low_limit_volts{sn=\"$sn\"}", "format": "table", "instant": true, "refId": "D" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_charge_overcurrent_limit_amperes{sn=\"$sn\"}", "format": "table", "instant": true, "refId": "E" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_discharge_overcurrent_limit_amperes{sn=\"$sn\"}", "format": "table", "instant": true, "refId": "F" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_charge_temp_high_limit_celsius{sn=\"$sn\"}", "format": "table", "instant": true, "refId": "G" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_discharge_temp_high_limit_celsius{sn=\"$sn\"}", "format": "table", "instant": true, "refId": "H" }
+      ],
+      "transformations": [
+        { "id": "labelsToFields", "options": {} },
+        { "id": "merge", "options": {} },
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "instance": true, "job": true, "sn": true }, "renameByName": { "__name__": "limit", "level": "level", "Value": "value" } } }
+      ]
+    },
+
+    { "type": "row", "id": 40, "title": "Exporter health", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 60 } },
+
+    {
+      "type": "timeseries", "id": 41, "title": "Frames decoded /s",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 61 },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "rate(daly_bms_frames_decoded_total[$__rate_interval])", "legendFormat": "{{block}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "id": 42, "title": "Frames dropped /s",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 61 },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never" }, "color": { "mode": "fixed", "fixedColor": "red" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "rate(daly_bms_frames_dropped_total[$__rate_interval])", "legendFormat": "{{reason}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "id": 43, "title": "HTTP requests /s",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 61 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "rate(daly_bms_http_requests_total[$__rate_interval])", "legendFormat": "{{endpoint}} {{status}}", "refId": "A" } ]
+    },
+
+    { "type": "row", "id": 50, "title": "Health — imbalance, SOH & energy", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 68 } },
+
+    {
+      "type": "stat", "id": 51, "title": "SOH (est) %",
+      "description": "SOH ≈ full-charge capacity / rated. Estimated from remaining/SOC — approximate for LTO (flat OCV curve); most reliable near full charge. EOL ~80%.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 69 },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 80 }, { "color": "green", "value": 90 } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_remaining_capacity_amp_hours{sn=~\"$sn\"} / (daly_bms_soc_percent{sn=~\"$sn\"}/100) / daly_bms_rated_capacity_amp_hours{sn=~\"$sn\"} * 100 and on(sn) (daly_bms_soc_percent{sn=~\"$sn\"} > 20)", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 52, "title": "C-rate",
+      "description": "Charge/discharge current relative to rated capacity (I/C). >0 charge, <0 discharge.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 69 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 2, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null }, { "color": "green", "value": 0 } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_current_amperes{sn=~\"$sn\"} / daly_bms_rated_capacity_amp_hours{sn=~\"$sn\"}", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 53, "title": "UV headroom (mV)",
+      "description": "Weakest cell voltage minus its under-voltage protection threshold. Thresholds preliminary — tune after baseline.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 69 },
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 50 }, { "color": "green", "value": 150 } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "(daly_bms_cell_voltage_min_volts{sn=~\"$sn\"} - on(sn) daly_bms_cell_voltage_low_limit_volts{sn=~\"$sn\",level=\"protection\"}) * 1000", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 54, "title": "OV headroom (mV)",
+      "description": "Over-voltage protection threshold minus strongest cell voltage. Thresholds preliminary.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 69 },
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 50 }, { "color": "green", "value": 150 } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "(daly_bms_cell_voltage_high_limit_volts{sn=~\"$sn\",level=\"protection\"} - on(sn) daly_bms_cell_voltage_max_volts{sn=~\"$sn\"}) * 1000", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 55, "title": "Time to full (h)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 69 },
+      "fieldConfig": { "defaults": { "unit": "h", "decimals": 1, "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "(daly_bms_rated_capacity_amp_hours{sn=~\"$sn\"} - daly_bms_remaining_capacity_amp_hours{sn=~\"$sn\"}) / daly_bms_current_amperes{sn=~\"$sn\"} and on(sn) (daly_bms_current_amperes{sn=~\"$sn\"} > 0)", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 56, "title": "Time to empty (h)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 69 },
+      "fieldConfig": { "defaults": { "unit": "h", "decimals": 1, "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_remaining_capacity_amp_hours{sn=~\"$sn\"} / (- daly_bms_current_amperes{sn=~\"$sn\"}) and on(sn) (daly_bms_current_amperes{sn=~\"$sn\"} < 0)", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 57, "title": "Charged (Ah, range)",
+      "description": "Coulomb-counted charge throughput over the dashboard time range (increase() handles counter resets on restart).",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 73 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 1, "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "increase(daly_bms_charge_amp_hours_total{sn=~\"$sn\"}[$__range])", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 58, "title": "Discharged (Ah, range)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 73 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 1, "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "increase(daly_bms_discharge_amp_hours_total{sn=~\"$sn\"}[$__range])", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 59, "title": "Net (Ah, range)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 73 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 1, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "orange", "value": null }, { "color": "green", "value": 0 } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "increase(daly_bms_charge_amp_hours_total{sn=~\"$sn\"}[$__range]) - increase(daly_bms_discharge_amp_hours_total{sn=~\"$sn\"}[$__range])", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 60, "title": "Coulombic eff (range) %",
+      "description": "Discharge Ah / charge Ah over the range. Meaningful over full charge/discharge cycles.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 5, "x": 15, "y": 73 },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1, "color": { "mode": "fixed", "fixedColor": "blue" } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "increase(daly_bms_discharge_amp_hours_total{sn=~\"$sn\"}[$__range]) / increase(daly_bms_charge_amp_hours_total{sn=~\"$sn\"}[$__range]) * 100", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "id": 61, "title": "Equiv. full cycles (range)",
+      "description": "Discharge throughput / rated capacity — throughput-based cycle count (independent of the BMS cycle counter).",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 73 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 2, "color": { "mode": "fixed", "fixedColor": "purple" } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "textMode": "value_and_name" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "increase(daly_bms_discharge_amp_hours_total{sn=~\"$sn\"}[$__range]) / daly_bms_rated_capacity_amp_hours{sn=~\"$sn\"}", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "id": 62, "title": "Cumulative Ah (in/out)",
+      "description": "Raw coulomb counters (reset to 0 on exporter restart — expected).",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 77 },
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_charge_amp_hours_total{sn=~\"$sn\"}", "legendFormat": "{{sn}} charged", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_discharge_amp_hours_total{sn=~\"$sn\"}", "legendFormat": "{{sn}} discharged", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 63, "title": "Ah throughput (avg A)",
+      "description": "rate() of the coulomb counters × 3600 = average current per direction.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 77 },
+      "fieldConfig": { "defaults": { "unit": "amp", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "rate(daly_bms_charge_amp_hours_total{sn=~\"$sn\"}[$__rate_interval]) * 3600", "legendFormat": "{{sn}} charge", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "rate(daly_bms_discharge_amp_hours_total{sn=~\"$sn\"}[$__rate_interval]) * 3600", "legendFormat": "{{sn}} discharge", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 64, "title": "Cell stddev (mV)",
+      "description": "Standard deviation of cell voltages — pack inconsistency. Rising trend = growing imbalance/degradation. Thresholds preliminary.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 77 },
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "thresholdsStyle": { "mode": "line" } }, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 40 }, { "color": "red", "value": 80 } ] } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "stddev by (sn) (daly_bms_cell_voltage_volts{sn=~\"$sn\"}) * 1000", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "id": 65, "title": "Imbalance vs balancing",
+      "description": "Cell spread (mV, left) and balancer duty cycle over 1h (%, right). Does balancing reduce the spread?",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 85 },
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [ { "matcher": { "id": "byRegexp", "options": ".*duty.*" }, "properties": [ { "id": "unit", "value": "percent" }, { "id": "custom.axisPlacement", "value": "right" }, { "id": "custom.fillOpacity", "value": 0 } ] } ] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_cell_voltage_delta_volts{sn=~\"$sn\"} * 1000", "legendFormat": "{{sn}} delta (mV)", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "avg_over_time(daly_bms_balancer_active{sn=~\"$sn\"}[1h]) * 100", "legendFormat": "{{sn}} balancer duty", "refId": "B" }
+      ]
+    },
+
+    { "type": "row", "id": 70, "title": "Health per cell — $sn", "collapsed": false, "repeat": "sn", "repeatDirection": "h", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 93 } },
+
+    {
+      "type": "bargauge", "id": 71, "title": "Cell deviation from mean (mV) — $sn",
+      "description": "Per-cell voltage minus pack average. Negative = weak/sagging cell (relative internal resistance / weaker cell).",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 94 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 1, "color": { "mode": "continuous-GrYlRd" } }, "overrides": [] },
+      "options": { "orientation": "horizontal", "displayMode": "basic", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "showUnfilled": true },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "(daly_bms_cell_voltage_volts{sn=\"$sn\"} - on(sn) group_left() daly_bms_cell_voltage_avg_volts{sn=\"$sn\"}) * 1000", "legendFormat": "cell {{cell}}", "refId": "A", "instant": true } ]
+    },
+    {
+      "type": "timeseries", "id": 72, "title": "Cell drift from mean (mV) — $sn",
+      "description": "Deviation over time — a cell that steadily drifts away is aging/weakening.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 94 },
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "drawStyle": "line", "fillOpacity": 0, "showPoints": "never", "lineWidth": 1 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "min", "max"] }, "tooltip": { "mode": "multi", "sort": "asc" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "(daly_bms_cell_voltage_volts{sn=\"$sn\"} - on(sn) group_left() daly_bms_cell_voltage_avg_volts{sn=\"$sn\"}) * 1000", "legendFormat": "cell {{cell}}", "refId": "A" } ]
+    },
+    {
+      "type": "table", "id": 73, "title": "Cell ranking — $sn",
+      "description": "Cells sorted by voltage (weakest at top).",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 94 },
+      "fieldConfig": { "defaults": { "unit": "volt", "decimals": 3 }, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "daly_bms_cell_voltage_volts{sn=\"$sn\"}", "format": "table", "instant": true, "refId": "A" } ],
+      "transformations": [
+        { "id": "labelsToFields", "options": {} },
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "sn": true }, "renameByName": { "cell": "cell", "Value": "voltage" } } },
+        { "id": "sortBy", "options": { "fields": {}, "sort": [ { "field": "voltage", "desc": false } ] } }
+      ]
+    }
+  ]
+}

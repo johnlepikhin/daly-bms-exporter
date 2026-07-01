@@ -1,0 +1,34 @@
+# cargo-deny configuration (advisories, licenses, bans, sources).
+# Run locally with `cargo deny check`.
+
+[advisories]
+version = 2
+yanked = "deny"
+# ignore = ["RUSTSEC-XXXX-YYYY"]  # transitive advisory that cannot be fixed yet
+
+[bans]
+# thiserror 1.x is pulled in transitively by prometheus 0.13 while the crate
+# itself uses thiserror 2 — warn on the duplicate rather than fail.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "MPL-2.0",
+  "CC0-1.0",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

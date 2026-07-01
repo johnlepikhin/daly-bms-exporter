@@ -1,0 +1,40 @@
+# Reusable quality gates (format, lint, test, supply-chain). Called by both
+# ci.yml (push/PR) and release.yml (tag), so the gates never drift.
+name: Checks
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: test
+        run: cargo test --all-targets
+
+  supply-chain:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # cargo-deny covers advisories (RUSTSEC CVEs), licenses, bans and sources
+      # in one gate. We intentionally do not also run cargo-audit: it duplicates
+      # the advisories check and its released binaries currently hard-error on
+      # CVSS 4.0 advisories present in the live RustSec DB.
+      - name: cargo-deny (advisories, bans, licenses, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

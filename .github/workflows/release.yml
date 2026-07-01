@@ -1,0 +1,62 @@
+# Build the aarch64 .deb (in the glibc-2.31 bullseye cross image, same as prod)
+# and publish it as a GitHub Release. Triggered by a version tag `vX.Y.Z`.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  # A tag must not ship broken code: run the same gates as CI.
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  release:
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          CARGO_VER=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          echo "Cargo.toml=$CARGO_VER tag=$TAG_VER"
+          test "$CARGO_VER" = "$TAG_VER" || {
+            echo "::error::tag $TAG_VER does not match Cargo.toml version $CARGO_VER"; exit 1;
+          }
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb@3 # pin major for reproducibility
+
+      - name: Build .deb (cross aarch64, glibc 2.31)
+        run: make deb # docker: cross-image -> cross-build -> cargo deb
+
+      - name: glibc ceiling gate (<= 2.31)
+        run: |
+          BIN=target/aarch64-unknown-linux-gnu/deploy/daly-bms-exporter
+          NEED=$(docker run --rm -v "$PWD":/src -w /src daly-bms-exporter-cross-aarch64 \
+            bash -c "aarch64-linux-gnu-objdump -T '$BIN' | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1" \
+            | sed 's/GLIBC_//')
+          echo "max glibc required: ${NEED:-none} (ceiling 2.31)"
+          if [ -n "$NEED" ] && [ "$(printf '%s\n%s\n' 2.31 "$NEED" | sort -V | tail -1)" != "2.31" ]; then
+            echo "::error::binary needs glibc $NEED > 2.31 — would not run on the target"; exit 1;
+          fi
+
+      - name: Checksums
+        run: cd target/debian && sha256sum *.deb > SHA256SUMS
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/debian/*.deb
+            target/debian/SHA256SUMS
+          generate_release_notes: true
+          fail_on_unmatched_files: true

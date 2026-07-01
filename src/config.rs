@@ -1,7 +1,7 @@
 //! YAML configuration.
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -38,6 +38,10 @@ pub struct Config {
     /// Hard cap on the number of distinct devices (serials) tracked, bounding
     /// metric cardinality / memory against untrusted `Sn` values. `0` = unlimited.
     pub max_devices: usize,
+    /// If set, the coulomb counters are persisted to this JSON file and restored
+    /// on startup, so charge/discharge totals survive restarts. `None` disables
+    /// persistence (counters reset on restart).
+    pub coulomb_state_path: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -51,6 +55,7 @@ impl Default for Config {
             request_timeout_secs: 10,
             coulomb_max_gap_secs: 900,
             max_devices: 64,
+            coulomb_state_path: None,
         }
     }
 }

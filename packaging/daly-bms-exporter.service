@@ -12,6 +12,9 @@ RestartSec=5
 
 # Run as an isolated, unprivileged transient user.
 DynamicUser=yes
+# Writable persistent state at /var/lib/daly-bms-exporter (owned by the dynamic
+# user) for the coulomb-counter state file (config: coulomb_state_path).
+StateDirectory=daly-bms-exporter
 # The Hlktech module POSTs to port 80; allow binding a privileged port so the
 # operator can set `listen: "0.0.0.0:80"` without running as root.
 AmbientCapabilities=CAP_NET_BIND_SERVICE

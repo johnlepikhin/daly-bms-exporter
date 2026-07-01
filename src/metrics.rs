@@ -2,15 +2,30 @@
 //! onto them. All families are labelled by `sn`; per-cell/sensor series are
 //! pruned when a device reports fewer cells so stale readings don't linger.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use prometheus::{
     CounterVec, Encoder, GaugeVec, IntCounterVec, IntGaugeVec, Opts, Registry, TextEncoder,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::decode::{ConfigData, Limits, RealtimeData};
+
+/// On-disk snapshot of the coulomb counters, keyed by serial.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CoulombState {
+    devices: BTreeMap<String, CoulombEntry>,
+}
+
+/// Persisted charge/discharge totals (amp-hours) for one device.
+#[derive(Debug, Serialize, Deserialize)]
+struct CoulombEntry {
+    charge_ah: f64,
+    discharge_ah: f64,
+}
 
 /// Per-device record of which cell/sensor series currently exist, so we can
 /// remove series that disappear (e.g. cell count shrinks or device goes away).
@@ -99,6 +114,8 @@ pub struct Metrics {
     coulomb_max_gap_secs: f64,
     /// Hard cap on distinct tracked serials (`0` = unlimited).
     max_devices: usize,
+    /// If set, coulomb totals are persisted here and restored on startup.
+    coulomb_state_path: Option<PathBuf>,
     seen: Mutex<HashMap<String, LastSeries>>,
 }
 
@@ -137,14 +154,19 @@ impl Metrics {
     ///
     /// `coulomb_max_gap_secs` caps the coulomb-counter integration interval
     /// (seconds); `max_devices` is a hard cap on distinct tracked serials
-    /// (`0` = unlimited).
+    /// (`0` = unlimited); `coulomb_state_path`, if set, persists the coulomb
+    /// totals to that file (call [`Metrics::restore_coulombs`] after construction).
     ///
     /// # Panics
     ///
     /// Panics only at startup if a metric name is duplicate or invalid (a
     /// programming bug).
     #[expect(clippy::too_many_lines)]
-    pub fn new(coulomb_max_gap_secs: f64, max_devices: usize) -> Self {
+    pub fn new(
+        coulomb_max_gap_secs: f64,
+        max_devices: usize,
+        coulomb_state_path: Option<PathBuf>,
+    ) -> Self {
         let r = Registry::new();
         Self {
             pack_voltage: register_gauge_vec(
@@ -402,6 +424,7 @@ impl Metrics {
             ),
             coulomb_max_gap_secs,
             max_devices,
+            coulomb_state_path,
             registry: r,
             seen: Mutex::new(HashMap::new()),
         }
@@ -587,6 +610,88 @@ impl Metrics {
         }
         entry.last_coulomb_ts = Some(now_secs);
         entry.last_current = Some(cur);
+        // The mutable borrow of `entry` ends here; persist the totals (no-op if
+        // persistence is not configured) while still holding the `seen` lock.
+        self.write_coulomb_state(&seen);
+    }
+
+    /// Restore the coulomb counters from `coulomb_state_path` (if configured),
+    /// seeding the `charge/discharge_amp_hours` counters so totals survive a
+    /// restart. A missing file is a normal first run; a corrupt file is logged
+    /// and ignored. Call once at startup after [`Metrics::new`].
+    pub fn restore_coulombs(&self) {
+        let Some(path) = &self.coulomb_state_path else {
+            return;
+        };
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "cannot read coulomb state");
+                return;
+            }
+        };
+        let state: CoulombState = match serde_json::from_slice(&bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "corrupt coulomb state; starting fresh");
+                return;
+            }
+        };
+        let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+        for (sn, e) in &state.devices {
+            if e.charge_ah > 0.0 {
+                self.charge_amp_hours
+                    .with_label_values(&[sn])
+                    .inc_by(e.charge_ah);
+            }
+            if e.discharge_ah > 0.0 {
+                self.discharge_amp_hours
+                    .with_label_values(&[sn])
+                    .inc_by(e.discharge_ah);
+            }
+            // Track the serial so future writes keep persisting it.
+            seen.entry(sn.clone()).or_default();
+        }
+        tracing::info!(devices = state.devices.len(), "restored coulomb counters");
+    }
+
+    /// Persist the coulomb counters now (e.g. on graceful shutdown). No-op if
+    /// persistence is not configured.
+    pub fn persist_coulombs(&self) {
+        let seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+        self.write_coulomb_state(&seen);
+    }
+
+    /// Atomically write the coulomb totals of all tracked devices to
+    /// `coulomb_state_path`. Must be called while holding the `seen` lock.
+    fn write_coulomb_state(&self, seen: &HashMap<String, LastSeries>) {
+        let Some(path) = &self.coulomb_state_path else {
+            return;
+        };
+        let mut state = CoulombState::default();
+        for sn in seen.keys() {
+            let charge_ah = self.charge_amp_hours.with_label_values(&[sn]).get();
+            let discharge_ah = self.discharge_amp_hours.with_label_values(&[sn]).get();
+            state.devices.insert(
+                sn.clone(),
+                CoulombEntry {
+                    charge_ah,
+                    discharge_ah,
+                },
+            );
+        }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = path.with_extension("tmp");
+        let write = serde_json::to_vec(&state)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| std::fs::write(&tmp, bytes))
+            .and_then(|()| std::fs::rename(&tmp, path));
+        if let Err(e) = write {
+            tracing::warn!(error = %e, path = %path.display(), "cannot persist coulomb state");
+        }
     }
 
     /// Record the outcome of an HTTP request (endpoint, status).
@@ -682,7 +787,7 @@ mod tests {
 
     #[test]
     fn render_contains_updated_series() {
-        let m = Metrics::new(900.0, 1024);
+        let m = Metrics::new(900.0, 1024, None);
         let data = RealtimeData {
             pack_v: Some(26.9),
             ..Default::default()
@@ -697,7 +802,7 @@ mod tests {
 
     #[test]
     fn stale_cell_series_are_pruned() {
-        let m = Metrics::new(900.0, 1024);
+        let m = Metrics::new(900.0, 1024, None);
         let d3 = RealtimeData {
             cells_v: vec![(1, 2.0), (2, 2.0), (3, 2.0)],
             ..Default::default()
@@ -715,7 +820,7 @@ mod tests {
 
     #[test]
     fn alarm_bits_decode_to_labelled_flags() {
-        let m = Metrics::new(900.0, 1024);
+        let m = Metrics::new(900.0, 1024, None);
         let data = RealtimeData {
             alarm_bits: Some(0x0300),
             ..Default::default()
@@ -741,7 +846,7 @@ mod tests {
 
     #[test]
     fn accumulate_coulombs_integrates_between_frames() {
-        let m = Metrics::new(900.0, 1024);
+        let m = Metrics::new(900.0, 1024, None);
         // First frame just sets the baseline (no increment).
         m.accumulate_coulombs("SN1", Some(10.0), 1_000.0);
         // Second frame 3600 s later, 10 A -> dt capped to 900 -> 2.5 Ah charge.
@@ -754,15 +859,35 @@ mod tests {
     }
 
     #[test]
+    fn coulomb_state_persists_across_restart() {
+        let path = std::env::temp_dir().join("daly-bms-coulomb-persist-test.json");
+        let _ = std::fs::remove_file(&path);
+        {
+            let m = Metrics::new(900.0, 1024, Some(path.clone()));
+            m.accumulate_coulombs("SN1", Some(10.0), 1_000.0); // baseline
+            m.accumulate_coulombs("SN1", Some(10.0), 1_000.0 + 3600.0); // +2.5 Ah, writes file
+        }
+        // A fresh instance (simulating a restart) restores the persisted total.
+        let m2 = Metrics::new(900.0, 1024, Some(path.clone()));
+        m2.restore_coulombs();
+        let body = m2.render().1;
+        assert!(
+            body.contains("daly_bms_charge_amp_hours_total{sn=\"SN1\"} 2.5"),
+            "restored body: {body}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn admit_caps_distinct_devices() {
-        let m = Metrics::new(900.0, 2);
+        let m = Metrics::new(900.0, 2, None);
         // admit reserves the slot, so devices that never decode still count.
         assert!(m.admit("A"), "1st device reserved");
         assert!(m.admit("B"), "2nd device reserved");
         assert!(m.admit("A"), "known device stays admitted");
         assert!(!m.admit("C"), "3rd distinct device rejected at cap");
 
-        let unlimited = Metrics::new(900.0, 0);
+        let unlimited = Metrics::new(900.0, 0, None);
         assert!(unlimited.admit("anything"), "0 = unlimited");
         assert!(unlimited.admit("another"));
     }

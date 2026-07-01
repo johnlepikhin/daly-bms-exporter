@@ -43,6 +43,7 @@ fn app(config: Config) -> axum::Router {
         metrics: Arc::new(Metrics::new(
             config.coulomb_max_gap_secs as f64,
             config.max_devices,
+            config.coulomb_state_path.clone(),
         )),
         config: Arc::new(config),
     };

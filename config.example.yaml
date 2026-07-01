@@ -41,3 +41,9 @@ coulomb_max_gap_secs: 900
 # distinct serials can fill it and starve real devices — set allowed_serials
 # (above) on untrusted networks.
 max_devices: 64
+
+# Persist the coulomb counters (charge/discharge amp-hours) to this JSON file so
+# the totals survive restarts (otherwise they reset to zero on every restart).
+# The systemd unit provides a writable StateDirectory at /var/lib/daly-bms-exporter.
+# Omit to disable persistence.
+coulomb_state_path: "/var/lib/daly-bms-exporter/coulombs.json"

@@ -42,11 +42,16 @@ async fn main() -> anyhow::Result<()> {
         "configuration loaded"
     );
 
+    let metrics = Arc::new(Metrics::new(
+        config.coulomb_max_gap_secs as f64,
+        config.max_devices,
+        config.coulomb_state_path.clone(),
+    ));
+    // Restore persisted coulomb totals (if configured) before serving scrapes.
+    metrics.restore_coulombs();
+
     let state = AppState {
-        metrics: Arc::new(Metrics::new(
-            config.coulomb_max_gap_secs as f64,
-            config.max_devices,
-        )),
+        metrics: metrics.clone(),
         config: Arc::new(config.clone()),
     };
     let app = router(state);
@@ -65,8 +70,11 @@ async fn main() -> anyhow::Result<()> {
         .await
     {
         tracing::error!(error = %e, "server error");
+        metrics.persist_coulombs();
         return Err(e.into());
     }
+    // Persist the latest coulomb totals on graceful shutdown.
+    metrics.persist_coulombs();
     tracing::info!("daly-bms-exporter stopped");
     Ok(())
 }

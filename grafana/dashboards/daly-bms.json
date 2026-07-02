@@ -514,6 +514,41 @@
       "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 85 }, { "color": "red", "value": 93 } ] } }, "overrides": [] },
       "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "textMode": "value_and_name" },
       "targets": [ { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "avg_over_time(daly_bms_soc_percent{sn=\"$sn\"}[7d])", "legendFormat": "{{sn}}", "refId": "A" } ]
+    },
+
+    { "type": "row", "id": 90, "title": "Energy (Wh) — measured V×I (∫ V·I dt)", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 116 } },
+
+    {
+      "type": "timeseries", "id": 91, "title": "Energy per hour (Wh) — received (+) / spent (−)",
+      "description": "Energy per hour integrated from measured power (V×I): received = charge (green, up), spent = discharge (orange, down). Bar = increase() of the restart-persisted Wh counter over each hour. Window pinned to the last 2 days so buckets stay hourly regardless of the dashboard range. Legend 'sum' = total over the window.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 117 },
+      "timeFrom": "2d",
+      "fieldConfig": { "defaults": { "unit": "watth", "custom": { "drawStyle": "bars", "fillOpacity": 70, "lineWidth": 1, "barAlignment": 0, "axisCenteredZero": true, "gradientMode": "none" } }, "overrides": [
+        { "matcher": { "id": "byFrameRefID", "options": "A" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] },
+        { "matcher": { "id": "byFrameRefID", "options": "B" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } } ] }
+      ] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "increase(daly_bms_charge_watt_hours_total{sn=~\"$sn\"}[$__interval])", "legendFormat": "received {{sn}}", "interval": "1h", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "-increase(daly_bms_discharge_watt_hours_total{sn=~\"$sn\"}[$__interval])", "legendFormat": "spent {{sn}}", "interval": "1h", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries", "id": 92, "title": "Energy per day (Wh) — received (+) / spent (−)",
+      "description": "Energy per day integrated from measured power (V×I): received = charge (green, up), spent = discharge (orange, down). Bar = increase() of the restart-persisted Wh counter over each day. Window pinned to the last 30 days so buckets stay daily regardless of the dashboard range. Legend 'sum' = total over the window.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 117 },
+      "timeFrom": "30d",
+      "fieldConfig": { "defaults": { "unit": "watth", "custom": { "drawStyle": "bars", "fillOpacity": 70, "lineWidth": 1, "barAlignment": 0, "axisCenteredZero": true, "gradientMode": "none" } }, "overrides": [
+        { "matcher": { "id": "byFrameRefID", "options": "A" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] },
+        { "matcher": { "id": "byFrameRefID", "options": "B" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } } ] }
+      ] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "increase(daly_bms_charge_watt_hours_total{sn=~\"$sn\"}[$__interval])", "legendFormat": "received {{sn}}", "interval": "1d", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "-increase(daly_bms_discharge_watt_hours_total{sn=~\"$sn\"}[$__interval])", "legendFormat": "spent {{sn}}", "interval": "1d", "refId": "B" }
+      ]
     }
   ]
 }

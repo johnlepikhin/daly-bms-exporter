@@ -168,8 +168,12 @@ fn handle_entry(st: &AppState, sn: &str, command: &str, data: &str) -> Result<()
                 "realtime frame decoded"
             );
             st.metrics.update_realtime(sn, &d);
-            st.metrics
-                .accumulate_coulombs(sn, d.current_a, crate::metrics::now_unix_secs());
+            st.metrics.accumulate_coulombs(
+                sn,
+                d.current_a,
+                d.pack_v,
+                crate::metrics::now_unix_secs(),
+            );
             st.metrics.record_decoded("realtime");
         }
         Block::Config => {

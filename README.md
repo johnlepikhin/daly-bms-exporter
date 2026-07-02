@@ -70,7 +70,9 @@ serial). Highlights:
   `daly_bms_charge_cycles`, `daly_bms_alarm{type}`, etc.
 - **Config / protection thresholds** — `daly_bms_*_limit_*{level}`.
 - **Coulomb counter** — `daly_bms_charge_amp_hours_total` /
-  `daly_bms_discharge_amp_hours_total`.
+  `daly_bms_discharge_amp_hours_total` (integral of current).
+- **Energy counter** — `daly_bms_charge_watt_hours_total` /
+  `daly_bms_discharge_watt_hours_total` (integral of measured power `V*I`).
 - **Staleness** — `daly_bms_last_frame_timestamp_seconds`.
 - **Self-observability** — `daly_bms_http_requests_total{endpoint,status}`,
   `daly_bms_frames_decoded_total{block}`,

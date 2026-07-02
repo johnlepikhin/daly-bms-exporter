@@ -14,17 +14,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::decode::{ConfigData, Limits, RealtimeData};
 
-/// On-disk snapshot of the coulomb counters, keyed by serial.
+/// On-disk snapshot of the charge/energy counters, keyed by serial. The type and
+/// the state file (`coulombs.json`) keep the "coulomb" name for backward
+/// compatibility, though they now also carry energy (watt-hours).
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct CoulombState {
     devices: BTreeMap<String, CoulombEntry>,
 }
 
-/// Persisted charge/discharge totals (amp-hours) for one device.
+/// Persisted charge (amp-hours) and energy (watt-hours) totals for one device.
+/// The `*_wh` fields default to `0.0` so a pre-existing state file that only has
+/// the `*_ah` fields still loads (energy simply starts fresh).
 #[derive(Debug, Serialize, Deserialize)]
 struct CoulombEntry {
     charge_ah: f64,
     discharge_ah: f64,
+    #[serde(default)]
+    charge_wh: f64,
+    #[serde(default)]
+    discharge_wh: f64,
 }
 
 /// Per-device record of which cell/sensor series currently exist, so we can
@@ -33,9 +41,11 @@ struct CoulombEntry {
 struct LastSeries {
     cells: Vec<u32>,
     sensors: Vec<u32>,
-    /// Coulomb-counter state: time and pack current of the previous frame.
+    /// Coulomb/energy-counter state: time, pack current and pack voltage of the
+    /// previous frame (voltage is used to integrate power = V*I into watt-hours).
     last_coulomb_ts: Option<f64>,
     last_current: Option<f64>,
+    last_pack_v: Option<f64>,
     /// Last label-tuple written to `device_info`, so the previous (possibly
     /// stale) series can be removed before a differing tuple is set. Guards
     /// against unbounded series growth from a device varying its identity
@@ -103,6 +113,10 @@ pub struct Metrics {
     // Coulomb counter: cumulative charge/discharge in amp-hours {sn}.
     charge_amp_hours: CounterVec,
     discharge_amp_hours: CounterVec,
+    // Energy counter: cumulative charge/discharge in watt-hours (integral of
+    // measured power V*I) {sn}.
+    charge_watt_hours: CounterVec,
+    discharge_watt_hours: CounterVec,
 
     // Exporter self-observability.
     http_requests: IntCounterVec,   // {endpoint, status}
@@ -422,6 +436,18 @@ impl Metrics {
                 "Cumulative discharge throughput (coulomb-counted)",
                 &["sn"],
             ),
+            charge_watt_hours: register_counter_vec(
+                &r,
+                "daly_bms_charge_watt_hours_total",
+                "Cumulative charge energy in watt-hours (integral of measured V*I)",
+                &["sn"],
+            ),
+            discharge_watt_hours: register_counter_vec(
+                &r,
+                "daly_bms_discharge_watt_hours_total",
+                "Cumulative discharge energy in watt-hours (integral of measured V*I)",
+                &["sn"],
+            ),
             coulomb_max_gap_secs,
             max_devices,
             coulomb_state_path,
@@ -582,9 +608,21 @@ impl Metrics {
     }
 
     /// Integrate pack current into the cumulative charge/discharge counters
-    /// (coulomb counting). Call once per accepted realtime frame with the
-    /// wall-clock time; trapezoidal over the interval since the previous frame.
-    pub fn accumulate_coulombs(&self, sn: &str, current_a: Option<f64>, now_secs: f64) {
+    /// (coulomb counting, amp-hours) and, when a pack voltage is present, integrate
+    /// measured power `V*I` into the energy counters (watt-hours). Call once per
+    /// accepted realtime frame with the wall-clock time; trapezoidal over the
+    /// interval since the previous frame.
+    ///
+    /// Note: energy = current × voltage, so a single anomalous frame inflates the
+    /// monotonic Wh counter more than the Ah counter. The gap-cap bounds the
+    /// interval but not the magnitude — same trade-off the Ah counter already has.
+    pub fn accumulate_coulombs(
+        &self,
+        sn: &str,
+        current_a: Option<f64>,
+        pack_v: Option<f64>,
+        now_secs: f64,
+    ) {
         let Some(cur) = current_a else { return };
         let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
         if !seen.contains_key(sn) {
@@ -594,31 +632,34 @@ impl Metrics {
             seen.insert(sn.to_string(), LastSeries::default());
         }
         let entry = seen.get_mut(sn).expect("just inserted or present");
+        let gap = self.coulomb_max_gap_secs;
+        // Single block (avoids a nested `if let` → clippy::collapsible_if): integrate
+        // Ah from current, and Wh from power when both endpoint voltages are known.
         if let (Some(last_ts), Some(last_cur)) = (entry.last_coulomb_ts, entry.last_current) {
-            let (charge, discharge) =
-                coulomb_increment(last_cur, cur, now_secs - last_ts, self.coulomb_max_gap_secs);
-            if charge > 0.0 {
-                self.charge_amp_hours
-                    .with_label_values(&[sn])
-                    .inc_by(charge);
-            }
-            if discharge > 0.0 {
-                self.discharge_amp_hours
-                    .with_label_values(&[sn])
-                    .inc_by(discharge);
+            let dt = now_secs - last_ts;
+            let ah = trapezoid_hours(last_cur, cur, dt, gap);
+            add_split(&self.charge_amp_hours, &self.discharge_amp_hours, sn, ah);
+            if let (Some(last_pv), Some(pv)) = (entry.last_pack_v, pack_v) {
+                // Power = V*I; trapezoid of power over the interval → watt-hours.
+                let wh = trapezoid_hours(last_cur * last_pv, cur * pv, dt, gap);
+                add_split(&self.charge_watt_hours, &self.discharge_watt_hours, sn, wh);
             }
         }
         entry.last_coulomb_ts = Some(now_secs);
         entry.last_current = Some(cur);
+        // Only updated on frames that carry current (early return on None above).
+        entry.last_pack_v = pack_v;
         // The mutable borrow of `entry` ends here; persist the totals (no-op if
         // persistence is not configured) while still holding the `seen` lock.
         self.write_coulomb_state(&seen);
     }
 
-    /// Restore the coulomb counters from `coulomb_state_path` (if configured),
-    /// seeding the `charge/discharge_amp_hours` counters so totals survive a
-    /// restart. A missing file is a normal first run; a corrupt file is logged
-    /// and ignored. Call once at startup after [`Metrics::new`].
+    /// Restore the persisted counters from `coulomb_state_path` (if configured),
+    /// seeding the amp-hour and watt-hour charge/discharge counters so the totals
+    /// survive a restart. A missing file is a normal first run; a corrupt file is
+    /// logged and ignored. Restored serials still honour the `max_devices` cap, so
+    /// a carried-over or hand-edited state file cannot blow past the cardinality
+    /// bound. Call once at startup after [`Metrics::new`].
     pub fn restore_coulombs(&self) {
         let Some(path) = &self.coulomb_state_path else {
             return;
@@ -634,26 +675,28 @@ impl Metrics {
         let state: CoulombState = match serde_json::from_slice(&bytes) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(error = %e, "corrupt coulomb state; starting fresh");
+                tracing::warn!(error = %e, path = %path.display(), "corrupt coulomb state; starting fresh");
                 return;
             }
         };
         let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut restored = 0usize;
         for (sn, e) in &state.devices {
-            if e.charge_ah > 0.0 {
-                self.charge_amp_hours
-                    .with_label_values(&[sn])
-                    .inc_by(e.charge_ah);
+            // Honour the same cardinality bound as `admit`/`accumulate_coulombs`:
+            // never restore more distinct serials than the cap allows.
+            if self.max_devices != 0 && seen.len() >= self.max_devices {
+                tracing::warn!(sn = ?sn, "restored state exceeds max_devices cap; skipping serial");
+                continue;
             }
-            if e.discharge_ah > 0.0 {
-                self.discharge_amp_hours
-                    .with_label_values(&[sn])
-                    .inc_by(e.discharge_ah);
-            }
+            inc_if_positive(&self.charge_amp_hours, sn, e.charge_ah);
+            inc_if_positive(&self.discharge_amp_hours, sn, e.discharge_ah);
+            inc_if_positive(&self.charge_watt_hours, sn, e.charge_wh);
+            inc_if_positive(&self.discharge_watt_hours, sn, e.discharge_wh);
             // Track the serial so future writes keep persisting it.
             seen.entry(sn.clone()).or_default();
+            restored += 1;
         }
-        tracing::info!(devices = state.devices.len(), "restored coulomb counters");
+        tracing::info!(devices = restored, "restored coulomb/energy counters");
     }
 
     /// Persist the coulomb counters now (e.g. on graceful shutdown). No-op if
@@ -671,13 +714,13 @@ impl Metrics {
         };
         let mut state = CoulombState::default();
         for sn in seen.keys() {
-            let charge_ah = self.charge_amp_hours.with_label_values(&[sn]).get();
-            let discharge_ah = self.discharge_amp_hours.with_label_values(&[sn]).get();
             state.devices.insert(
                 sn.clone(),
                 CoulombEntry {
-                    charge_ah,
-                    discharge_ah,
+                    charge_ah: self.charge_amp_hours.with_label_values(&[sn]).get(),
+                    discharge_ah: self.discharge_amp_hours.with_label_values(&[sn]).get(),
+                    charge_wh: self.charge_watt_hours.with_label_values(&[sn]).get(),
+                    discharge_wh: self.discharge_watt_hours.with_label_values(&[sn]).get(),
                 },
             );
         }
@@ -741,17 +784,37 @@ fn sync_indexed(vec: &GaugeVec, sn: &str, prev: &mut Vec<u32>, cur: &[(u32, f64)
     *prev = cur_idx;
 }
 
-/// Trapezoidal coulomb increment over an interval, split by direction. Returns
-/// `(charge_ah, discharge_ah)` (one is always zero). `dt` is clamped to
-/// `max_gap` so a data gap doesn't integrate a stale current; non-positive `dt`
-/// yields zero.
-fn coulomb_increment(prev_i: f64, cur_i: f64, dt_secs: f64, max_gap: f64) -> (f64, f64) {
+/// Trapezoidal integral of a signed quantity over an interval, in per-hour units,
+/// split by direction. Returns `(positive, negative)` (one is always zero). Feed
+/// current (A) to get amp-hours, or power (W = V*I) to get watt-hours. `dt` is
+/// clamped to `max_gap` so a data gap doesn't integrate a stale reading;
+/// non-positive `dt` yields zero.
+fn trapezoid_hours(prev: f64, cur: f64, dt_secs: f64, max_gap: f64) -> (f64, f64) {
     if dt_secs <= 0.0 {
         return (0.0, 0.0);
     }
     let dt = dt_secs.min(max_gap);
-    let ah = (prev_i + cur_i) / 2.0 * dt / 3600.0;
-    if ah >= 0.0 { (ah, 0.0) } else { (0.0, -ah) }
+    let value = (prev + cur) / 2.0 * dt / 3600.0;
+    if value >= 0.0 {
+        (value, 0.0)
+    } else {
+        (0.0, -value)
+    }
+}
+
+/// Add a `(positive, negative)` split (from [`trapezoid_hours`]) onto a pair of
+/// direction counters for one device, skipping zero increments.
+fn add_split(positive: &CounterVec, negative: &CounterVec, sn: &str, split: (f64, f64)) {
+    inc_if_positive(positive, sn, split.0);
+    inc_if_positive(negative, sn, split.1);
+}
+
+/// Increment a counter for `sn` by `v` when `v > 0` (a `CounterVec` panics on a
+/// negative increment; a zero increment is a pointless series-creating no-op).
+fn inc_if_positive(counter: &CounterVec, sn: &str, v: f64) {
+    if v > 0.0 {
+        counter.with_label_values(&[sn]).inc_by(v);
+    }
 }
 
 /// Zero-pad a cell/sensor index so string-sorted consumers (Grafana legends,
@@ -832,42 +895,78 @@ mod tests {
     }
 
     #[test]
-    fn coulomb_increment_directions_and_gap_cap() {
+    fn trapezoid_hours_directions_and_gap_cap() {
         // 10 A charge for 1 h, but dt capped to 900 s -> 10*900/3600 = 2.5 Ah.
-        assert_eq!(coulomb_increment(10.0, 10.0, 3600.0, 900.0), (2.5, 0.0));
+        assert_eq!(trapezoid_hours(10.0, 10.0, 3600.0, 900.0), (2.5, 0.0));
         // -20 A discharge for 900 s -> 5.0 Ah discharge.
-        let (c, d) = coulomb_increment(-20.0, -20.0, 900.0, 900.0);
+        let (c, d) = trapezoid_hours(-20.0, -20.0, 900.0, 900.0);
         assert!(c == 0.0 && (d - 5.0).abs() < 1e-9);
         // Non-positive dt -> nothing.
-        assert_eq!(coulomb_increment(10.0, 10.0, 0.0, 900.0), (0.0, 0.0));
+        assert_eq!(trapezoid_hours(10.0, 10.0, 0.0, 900.0), (0.0, 0.0));
         // Trapezoidal average across a sign change (avg = 0) -> nothing.
-        assert_eq!(coulomb_increment(10.0, -10.0, 100.0, 900.0), (0.0, 0.0));
+        assert_eq!(trapezoid_hours(10.0, -10.0, 100.0, 900.0), (0.0, 0.0));
+        // Fed power (260 W = 10 A * 26 V) for 900 s -> 65 Wh.
+        assert_eq!(trapezoid_hours(260.0, 260.0, 900.0, 900.0), (65.0, 0.0));
     }
 
     #[test]
-    fn accumulate_coulombs_integrates_between_frames() {
+    fn accumulate_coulombs_integrates_charge_and_energy() {
         let m = Metrics::new(900.0, 1024, None);
         // First frame just sets the baseline (no increment).
-        m.accumulate_coulombs("SN1", Some(10.0), 1_000.0);
-        // Second frame 3600 s later, 10 A -> dt capped to 900 -> 2.5 Ah charge.
-        m.accumulate_coulombs("SN1", Some(10.0), 1_000.0 + 3600.0);
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
+        // Second frame 3600 s later at 10 A / 26 V -> dt capped to 900 s ->
+        // 2.5 Ah charge and (10*26)*900/3600 = 65 Wh charge.
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 3600.0);
         let body = m.render().1;
         assert!(
             body.contains("daly_bms_charge_amp_hours_total{sn=\"SN1\"} 2.5"),
             "unexpected body: {body}"
         );
+        assert!(
+            body.contains("daly_bms_charge_watt_hours_total{sn=\"SN1\"} 65"),
+            "unexpected body: {body}"
+        );
     }
 
     #[test]
-    fn coulomb_state_persists_across_restart() {
-        let path = std::env::temp_dir().join("daly-bms-coulomb-persist-test.json");
+    fn accumulate_coulombs_discharge_and_skips_energy_without_voltage() {
+        let m = Metrics::new(900.0, 1024, None);
+        // Discharge with voltage: -10 A / 26 V over 900 s -> 2.5 Ah and 65 Wh discharge.
+        m.accumulate_coulombs("SN1", Some(-10.0), Some(26.0), 1_000.0);
+        m.accumulate_coulombs("SN1", Some(-10.0), Some(26.0), 1_000.0 + 900.0);
+        // Current present but no voltage: amp-hours accumulate, energy is skipped.
+        m.accumulate_coulombs("SN2", Some(-10.0), None, 2_000.0);
+        m.accumulate_coulombs("SN2", Some(-10.0), None, 2_000.0 + 900.0);
+        let body = m.render().1;
+        assert!(
+            body.contains("daly_bms_discharge_amp_hours_total{sn=\"SN1\"} 2.5"),
+            "unexpected body: {body}"
+        );
+        assert!(
+            body.contains("daly_bms_discharge_watt_hours_total{sn=\"SN1\"} 65"),
+            "unexpected body: {body}"
+        );
+        assert!(
+            body.contains("daly_bms_discharge_amp_hours_total{sn=\"SN2\"} 2.5"),
+            "unexpected body: {body}"
+        );
+        // No pack voltage for SN2 -> no watt-hour series must be minted for it.
+        assert!(
+            !body.contains("daly_bms_discharge_watt_hours_total{sn=\"SN2\"}"),
+            "energy minted without voltage: {body}"
+        );
+    }
+
+    #[test]
+    fn coulomb_and_energy_state_persist_across_restart() {
+        let path = std::env::temp_dir().join("daly-bms-energy-persist-test.json");
         let _ = std::fs::remove_file(&path);
         {
             let m = Metrics::new(900.0, 1024, Some(path.clone()));
-            m.accumulate_coulombs("SN1", Some(10.0), 1_000.0); // baseline
-            m.accumulate_coulombs("SN1", Some(10.0), 1_000.0 + 3600.0); // +2.5 Ah, writes file
+            m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0); // baseline
+            m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 3600.0); // +2.5 Ah / 65 Wh
         }
-        // A fresh instance (simulating a restart) restores the persisted total.
+        // A fresh instance (simulating a restart) restores both totals.
         let m2 = Metrics::new(900.0, 1024, Some(path.clone()));
         m2.restore_coulombs();
         let body = m2.render().1;
@@ -875,7 +974,22 @@ mod tests {
             body.contains("daly_bms_charge_amp_hours_total{sn=\"SN1\"} 2.5"),
             "restored body: {body}"
         );
+        assert!(
+            body.contains("daly_bms_charge_watt_hours_total{sn=\"SN1\"} 65"),
+            "restored body: {body}"
+        );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn old_state_file_without_energy_loads() {
+        // A pre-v0.1.5 state file has only the *_ah fields; the *_wh fields must
+        // default to 0.0 (serde default) so restore does not fail.
+        let json = r#"{"devices":{"SN1":{"charge_ah":1.5,"discharge_ah":2.0}}}"#;
+        let state: CoulombState = serde_json::from_str(json).expect("legacy file loads");
+        let e = &state.devices["SN1"];
+        assert_eq!((e.charge_ah, e.discharge_ah), (1.5, 2.0));
+        assert_eq!((e.charge_wh, e.discharge_wh), (0.0, 0.0));
     }
 
     #[test]

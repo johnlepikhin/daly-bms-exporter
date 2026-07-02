@@ -16,7 +16,9 @@ Hlktech. Устройство периодически шлёт сырые Modbu
 `edition = "2024"`; проект собирается, тестируется и развёрнут.
 
 Реализованы также: **кулоновский счётчик** (charge/discharge amp-hours, интеграл
-тока по времени), **self-observability метрики** (`http_requests`,
+тока по времени) и **энергетический счётчик** (charge/discharge watt-hours,
+интеграл мгновенной мощности `V*I`), оба с дисковой персистентностью
+(`coulomb_state_path`), **self-observability метрики** (`http_requests`,
 `frames_decoded`, `frames_dropped`, `last_frame_timestamp`), **device_info**.
 Есть **Grafana-дашборд** (`grafana/`), **деплой** (`scripts/deploy.sh`,
 `make deploy`/`make grafana` на aarch64-хост), **CI/Release**

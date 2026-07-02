@@ -1,3 +1,4 @@
 /target
 /.cross-cargo
 /mcp_debug.log
+.cargo-docker/

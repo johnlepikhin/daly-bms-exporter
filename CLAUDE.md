@@ -77,26 +77,20 @@ make grafana REMOTE=<host>        # установка Grafana-дашборда 
 
 Конфиг — YAML через **`serde_norway`** (поддерживаемый форк архивного
 `serde_yaml`); поля: `listen`, `metrics_path`, `log_level`, `allowed_serials`,
-`max_body_bytes`, `request_timeout_secs`, `coulomb_max_gap_secs`, `max_devices`
-(см. `config.example.yaml`).
+`max_body_bytes`, `request_timeout_secs`, `coulomb_max_gap_secs`, `max_devices`,
+`coulomb_state_path` (см. `config.example.yaml`).
+
+Пакетирование: `packaging/daly-bms-exporter.service` — systemd-unit (DynamicUser +
+`CAP_NET_BIND_SERVICE` + `StateDirectory=daly-bms-exporter` для persistence
+кулоновских/энергетических счётчиков); ставится через `make deb` (cargo-deb).
 
 ## Ключевые правила декодирования (легко ошибиться)
 
-Формулы кодирования регистров (16 бит, big-endian):
-
-- **Ток:** `(raw − 30000) × 0.1` А. `>0` заряд, `<0` разряд. Та же кодировка у
-  тока пакета (0x0029), тока балансировки (0x0040) и всех токовых защит.
-- **Температура:** `raw − 40` °C (внешние датчики, MOS, температурные защиты).
-  Исключение — дельта-температуры (`0x009D` diff temp) без offset'а.
-- **Напряжение ячейки:** мВ напрямую. **Напряжение пакета:** `raw × 0.1` В.
-- **SOC / ёмкость:** `raw × 0.1` (% и Ач).
-- **CRC16:** Modbus, полином `0xA001` (reflected), init `0xFFFF`, передаётся
-  little-endian. Валидировать кадры перед парсингом.
-- Пустые слоты (лишние ячейки/датчики) приходят как `0000` — отфильтровывать.
-- Защиты в блоке 0x0080 хранятся парами `(warning, protection)` в соседних
-  регистрах.
-- Часть регистров/битов не идентифицирована (см. §8 doc) — не выдумывать
-  семантику, помечать как reserved/unknown.
+Формулы кодирования регистров (ток `(raw−30000)×0.1`, температура `raw−40`,
+напряжения, SOC/ёмкость `×0.1`, CRC16 `0xA001`, пустые слоты `0000` и т.д.)
+вынесены в **`.claude/rules/decoding.md`** (scoped на `src/decode.rs`,
+`src/modbus.rs`). Единственный источник истины по протоколу —
+`doc/daly-bms-protocol.md`; читать перед любой работой с парсером.
 
 ## Стиль
 

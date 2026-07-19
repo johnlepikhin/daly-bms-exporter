@@ -40,7 +40,7 @@
         "type": "datasource"
       },
       {
-        "allValue": ".*",
+        "allValue": ".+",
         "current": {
           "text": "All",
           "value": "$__all"

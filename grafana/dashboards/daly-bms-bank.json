@@ -50,11 +50,11 @@
           "uid": "${DS_PROMETHEUS}"
         },
         "includeAll": true,
-        "label": "Device (sn)",
+        "label": "Battery",
         "multi": true,
-        "name": "sn",
+        "name": "battery",
         "query": {
-          "query": "label_values(daly_bms_pack_voltage_volts, sn)",
+          "query": "label_values(daly_bms_pack_voltage_volts, battery)",
           "refId": "A"
         },
         "refresh": 2,
@@ -135,7 +135,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "avg(daly_bms_pack_voltage_volts{sn=~\"$sn\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "avg(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A"
         }
       ]
@@ -190,7 +190,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(daly_bms_current_amperes{sn=~\"$sn\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "sum(daly_bms_current_amperes{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A"
         }
       ]
@@ -245,7 +245,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(daly_bms_pack_voltage_volts{sn=~\"$sn\"} * on(sn) daly_bms_current_amperes{sn=~\"$sn\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "sum(daly_bms_pack_voltage_volts{battery=~\"$battery\"} * on(sn) daly_bms_current_amperes{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A"
         }
       ]
@@ -304,7 +304,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "count((time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"}) < 600)",
+          "expr": "count((time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"}) < 600)",
           "refId": "A"
         }
       ]
@@ -359,7 +359,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_charge_watt_hours_total{sn=~\"$sn\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A"
         }
       ]
@@ -414,7 +414,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_discharge_watt_hours_total{sn=~\"$sn\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A"
         }
       ]
@@ -469,7 +469,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_charge_watt_hours_total{sn=~\"$sn\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600)) - sum(increase(daly_bms_discharge_watt_hours_total{sn=~\"$sn\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600)) - sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A"
         }
       ]
@@ -532,7 +532,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "max(time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"})",
+          "expr": "max(time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"})",
           "refId": "A"
         }
       ]
@@ -592,7 +592,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(daly_bms_current_amperes{sn=~\"$sn\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "sum(daly_bms_current_amperes{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A",
           "legendFormat": "total current"
         }
@@ -641,7 +641,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(daly_bms_pack_voltage_volts{sn=~\"$sn\"} * on(sn) daly_bms_current_amperes{sn=~\"$sn\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "sum(daly_bms_pack_voltage_volts{battery=~\"$battery\"} * on(sn) daly_bms_current_amperes{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A",
           "legendFormat": "total power"
         }
@@ -690,7 +690,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "avg(daly_bms_pack_voltage_volts{sn=~\"$sn\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "avg(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A",
           "legendFormat": "avg"
         },
@@ -699,7 +699,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "min(daly_bms_pack_voltage_volts{sn=~\"$sn\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "min(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "B",
           "legendFormat": "min"
         },
@@ -708,7 +708,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "max(daly_bms_pack_voltage_volts{sn=~\"$sn\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "max(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "C",
           "legendFormat": "max"
         }
@@ -804,7 +804,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_charge_watt_hours_total{sn=~\"$sn\"}[$__interval]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__interval]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A",
           "legendFormat": "received",
           "interval": "1h"
@@ -814,7 +814,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "-sum(increase(daly_bms_discharge_watt_hours_total{sn=~\"$sn\"}[$__interval]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "-sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__interval]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "B",
           "legendFormat": "spent",
           "interval": "1h"
@@ -902,7 +902,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_charge_watt_hours_total{sn=~\"$sn\"}[$__interval]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__interval]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A",
           "legendFormat": "received",
           "interval": "1d"
@@ -912,7 +912,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "-sum(increase(daly_bms_discharge_watt_hours_total{sn=~\"$sn\"}[$__interval]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "-sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__interval]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "B",
           "legendFormat": "spent",
           "interval": "1d"
@@ -972,7 +972,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_charge_amp_hours_total{sn=~\"$sn\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "sum(increase(daly_bms_charge_amp_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A"
         }
       ]
@@ -1027,7 +1027,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_discharge_amp_hours_total{sn=~\"$sn\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "sum(increase(daly_bms_discharge_amp_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A"
         }
       ]
@@ -1082,7 +1082,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_charge_amp_hours_total{sn=~\"$sn\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600)) - sum(increase(daly_bms_discharge_amp_hours_total{sn=~\"$sn\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600))",
+          "expr": "sum(increase(daly_bms_charge_amp_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600)) - sum(increase(daly_bms_discharge_amp_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A"
         }
       ]
@@ -1247,7 +1247,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by(sn)(daly_bms_pack_voltage_volts{sn=~\"$sn\"})",
+          "expr": "sum by(battery)(daly_bms_pack_voltage_volts{battery=~\"$battery\"})",
           "refId": "A",
           "format": "table",
           "instant": true
@@ -1257,7 +1257,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by(sn)(daly_bms_current_amperes{sn=~\"$sn\"})",
+          "expr": "sum by(battery)(daly_bms_current_amperes{battery=~\"$battery\"})",
           "refId": "B",
           "format": "table",
           "instant": true
@@ -1267,7 +1267,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "100*sum by(sn)(daly_bms_current_amperes{sn=~\"$sn\"}) / scalar(sum(daly_bms_current_amperes{sn=~\"$sn\"}))",
+          "expr": "100*sum by(battery)(daly_bms_current_amperes{battery=~\"$battery\"}) / scalar(sum(daly_bms_current_amperes{battery=~\"$battery\"}))",
           "refId": "C",
           "format": "table",
           "instant": true
@@ -1277,7 +1277,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by(sn)(increase(daly_bms_charge_watt_hours_total{sn=~\"$sn\"}[$__range]))",
+          "expr": "sum by(battery)(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__range]))",
           "refId": "D",
           "format": "table",
           "instant": true
@@ -1287,7 +1287,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by(sn)(time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"})",
+          "expr": "sum by(battery)(time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"})",
           "refId": "E",
           "format": "table",
           "instant": true
@@ -1297,7 +1297,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by(sn)(daly_bms_soc_percent{sn=~\"$sn\"})",
+          "expr": "sum by(battery)(daly_bms_soc_percent{battery=~\"$battery\"})",
           "refId": "F",
           "format": "table",
           "instant": true
@@ -1318,7 +1318,7 @@
               "job": true
             },
             "renameByName": {
-              "sn": "pack",
+              "battery": "pack",
               "Value #A": "V",
               "Value #B": "current A",
               "Value #C": "share %",
@@ -1373,9 +1373,9 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "daly_bms_current_amperes{sn=~\"$sn\"}",
+          "expr": "daly_bms_current_amperes{battery=~\"$battery\"}",
           "refId": "A",
-          "legendFormat": "{{sn}}"
+          "legendFormat": "{{battery}}"
         }
       ]
     },
@@ -1422,9 +1422,9 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "(100*daly_bms_current_amperes{sn=~\"$sn\"} / on() group_left sum(daly_bms_current_amperes{sn=~\"$sn\"})) and on() (abs(sum(daly_bms_current_amperes{sn=~\"$sn\"}))>2)",
+          "expr": "(100*daly_bms_current_amperes{battery=~\"$battery\"} / on() group_left sum(daly_bms_current_amperes{battery=~\"$battery\"})) and on() (abs(sum(daly_bms_current_amperes{battery=~\"$battery\"}))>2)",
           "refId": "A",
-          "legendFormat": "{{sn}}"
+          "legendFormat": "{{battery}}"
         }
       ],
       "description": "Share of total bank current per pack (only shown when |Σcurrent|>2 A; noise-gated at idle)."
@@ -1487,7 +1487,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "(max(daly_bms_pack_voltage_volts{sn=~\"$sn\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600)) - min(daly_bms_pack_voltage_volts{sn=~\"$sn\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{sn=~\"$sn\"} < 600)))*1000",
+          "expr": "(max(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600)) - min(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600)))*1000",
           "refId": "A"
         }
       ],
@@ -1536,9 +1536,9 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "daly_bms_soc_percent{sn=~\"$sn\"}",
+          "expr": "daly_bms_soc_percent{battery=~\"$battery\"}",
           "refId": "A",
-          "legendFormat": "{{sn}}"
+          "legendFormat": "{{battery}}"
         }
       ],
       "description": "Vendor SOC — the controller computes it incorrectly; shown only to see per-pack divergence, NOT as ground truth."

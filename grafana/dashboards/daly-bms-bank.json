@@ -40,7 +40,7 @@
         "type": "datasource"
       },
       {
-        "allValue": ".+",
+        "allValue": ".*",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -359,7 +359,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__range]))",
           "refId": "A"
         }
       ]
@@ -414,7 +414,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__range]))",
           "refId": "A"
         }
       ]
@@ -469,7 +469,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600)) - sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__range])) - sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__range]))",
           "refId": "A"
         }
       ]
@@ -804,7 +804,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__interval]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__interval]))",
           "refId": "A",
           "legendFormat": "received",
           "interval": "1h"
@@ -814,7 +814,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "-sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__interval]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "-sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__interval]))",
           "refId": "B",
           "legendFormat": "spent",
           "interval": "1h"
@@ -902,7 +902,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__interval]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__interval]))",
           "refId": "A",
           "legendFormat": "received",
           "interval": "1d"
@@ -912,7 +912,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "-sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__interval]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "-sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__interval]))",
           "refId": "B",
           "legendFormat": "spent",
           "interval": "1d"
@@ -972,7 +972,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_charge_amp_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "sum(increase(daly_bms_charge_amp_hours_total{battery=~\"$battery\"}[$__range]))",
           "refId": "A"
         }
       ]
@@ -1027,7 +1027,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_discharge_amp_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "sum(increase(daly_bms_discharge_amp_hours_total{battery=~\"$battery\"}[$__range]))",
           "refId": "A"
         }
       ]
@@ -1082,7 +1082,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(daly_bms_charge_amp_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600)) - sum(increase(daly_bms_discharge_amp_hours_total{battery=~\"$battery\"}[$__range]) and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "sum(increase(daly_bms_charge_amp_hours_total{battery=~\"$battery\"}[$__range])) - sum(increase(daly_bms_discharge_amp_hours_total{battery=~\"$battery\"}[$__range]))",
           "refId": "A"
         }
       ]

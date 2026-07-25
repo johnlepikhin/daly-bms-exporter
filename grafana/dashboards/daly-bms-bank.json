@@ -40,7 +40,7 @@
         "type": "datasource"
       },
       {
-        "allValue": ".*",
+        "allValue": ".+",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -86,7 +86,7 @@
       }
     },
     {
-      "type": "stat",
+      "type": "timeseries",
       "id": 101,
       "title": "Bus voltage",
       "datasource": {
@@ -94,40 +94,41 @@
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 4,
-        "w": 6,
+        "h": 6,
+        "w": 8,
         "x": 0,
         "y": 1
       },
       "fieldConfig": {
         "defaults": {
           "unit": "volt",
-          "decimals": 2,
-          "color": {
-            "mode": "thresholds"
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 18,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear"
           },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
+          "decimals": 2
         },
         "overrides": []
       },
       "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
           "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
+            "lastNotNull",
+            "min",
+            "max",
+            "mean"
+          ]
         },
-        "textMode": "value"
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "targets": [
         {
@@ -136,12 +137,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "avg(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
-          "refId": "A"
+          "refId": "A",
+          "legendFormat": "bus V"
         }
       ]
     },
     {
-      "type": "stat",
+      "type": "timeseries",
       "id": 102,
       "title": "Total current",
       "datasource": {
@@ -149,40 +151,41 @@
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 6,
+        "h": 6,
+        "w": 8,
+        "x": 8,
         "y": 1
       },
       "fieldConfig": {
         "defaults": {
           "unit": "amp",
-          "decimals": 1,
-          "color": {
-            "mode": "thresholds"
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 18,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear"
           },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
+          "decimals": 1
         },
         "overrides": []
       },
       "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
           "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
+            "lastNotNull",
+            "min",
+            "max",
+            "mean"
+          ]
         },
-        "textMode": "value"
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "targets": [
         {
@@ -191,12 +194,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "sum(daly_bms_current_amperes{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
-          "refId": "A"
+          "refId": "A",
+          "legendFormat": "total current"
         }
       ]
     },
     {
-      "type": "stat",
+      "type": "timeseries",
       "id": 103,
       "title": "Total power",
       "datasource": {
@@ -204,40 +208,41 @@
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 12,
+        "h": 6,
+        "w": 8,
+        "x": 16,
         "y": 1
       },
       "fieldConfig": {
         "defaults": {
           "unit": "watt",
-          "decimals": 0,
-          "color": {
-            "mode": "thresholds"
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 18,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear"
           },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
+          "decimals": 0
         },
         "overrides": []
       },
       "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
           "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
+            "lastNotNull",
+            "min",
+            "max",
+            "mean"
+          ]
         },
-        "textMode": "value"
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "targets": [
         {
@@ -246,7 +251,179 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "sum(daly_bms_pack_voltage_volts{battery=~\"$battery\"} * on(sn) daly_bms_current_amperes{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
-          "refId": "A"
+          "refId": "A",
+          "legendFormat": "total power"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 105,
+      "title": "Energy in (range)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watth",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 18,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "energy in"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 106,
+      "title": "Energy out (range)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watth",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 18,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "energy out"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 107,
+      "title": "Net energy (range)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watth",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 18,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "gradientMode": "opacity",
+            "lineInterpolation": "linear"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__range])) - sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__range]))",
+          "refId": "A",
+          "legendFormat": "net"
         }
       ]
     },
@@ -260,9 +437,9 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 1
+        "w": 12,
+        "x": 0,
+        "y": 13
       },
       "fieldConfig": {
         "defaults": {
@@ -311,171 +488,6 @@
     },
     {
       "type": "stat",
-      "id": 105,
-      "title": "Energy in (range)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 0,
-        "y": 5
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "watth",
-          "decimals": 0,
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__range]))",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "stat",
-      "id": 106,
-      "title": "Energy out (range)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 6,
-        "y": 5
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "watth",
-          "decimals": 0,
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__range]))",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "stat",
-      "id": 107,
-      "title": "Net energy (range)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 12,
-        "y": 5
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "watth",
-          "decimals": 0,
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__range])) - sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__range]))",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "stat",
       "id": 108,
       "title": "Worst frame age",
       "datasource": {
@@ -484,9 +496,9 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 5
+        "w": 12,
+        "x": 12,
+        "y": 13
       },
       "fieldConfig": {
         "defaults": {
@@ -546,7 +558,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 17
       }
     },
     {
@@ -561,7 +573,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 10
+        "y": 18
       },
       "fieldConfig": {
         "defaults": {
@@ -610,7 +622,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 10
+        "y": 18
       },
       "fieldConfig": {
         "defaults": {
@@ -659,7 +671,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 10
+        "y": 18
       },
       "fieldConfig": {
         "defaults": {
@@ -723,7 +735,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 18
+        "y": 26
       }
     },
     {
@@ -738,7 +750,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 19
+        "y": 27
       },
       "fieldConfig": {
         "defaults": {
@@ -822,7 +834,7 @@
       ],
       "timeFrom": "2d",
       "interval": "1h",
-      "description": "Bank total energy (sum across fresh packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). CAVEAT: sum(increase()) inherits the counter-reset artifact — an exporter/pack restart can inject a false bar (see restore_coulombs fix). Buckets are UTC-aligned."
+      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). UTC-aligned."
     },
     {
       "type": "timeseries",
@@ -836,7 +848,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 19
+        "y": 27
       },
       "fieldConfig": {
         "defaults": {
@@ -920,7 +932,7 @@
       ],
       "timeFrom": "30d",
       "interval": "1d",
-      "description": "Bank total energy (sum across fresh packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). CAVEAT: sum(increase()) inherits the counter-reset artifact — an exporter/pack restart can inject a false bar (see restore_coulombs fix). Buckets are UTC-aligned."
+      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). UTC-aligned."
     },
     {
       "type": "stat",
@@ -934,7 +946,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 28
+        "y": 36
       },
       "fieldConfig": {
         "defaults": {
@@ -989,7 +1001,7 @@
         "h": 4,
         "w": 8,
         "x": 8,
-        "y": 28
+        "y": 36
       },
       "fieldConfig": {
         "defaults": {
@@ -1044,7 +1056,7 @@
         "h": 4,
         "w": 8,
         "x": 16,
-        "y": 28
+        "y": 36
       },
       "fieldConfig": {
         "defaults": {
@@ -1096,7 +1108,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 32
+        "y": 40
       }
     },
     {
@@ -1112,7 +1124,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 33
+        "y": 41
       },
       "fieldConfig": {
         "defaults": {
@@ -1342,7 +1354,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 41
+        "y": 49
       },
       "fieldConfig": {
         "defaults": {
@@ -1391,7 +1403,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 41
+        "y": 49
       },
       "fieldConfig": {
         "defaults": {
@@ -1441,7 +1453,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 41
+        "y": 49
       },
       "fieldConfig": {
         "defaults": {
@@ -1505,7 +1517,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 45
+        "y": 53
       },
       "fieldConfig": {
         "defaults": {

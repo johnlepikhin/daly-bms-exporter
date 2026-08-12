@@ -1112,21 +1112,6 @@
       }
     },
     {
-      "type": "text",
-      "id": 136,
-      "title": "⚠ Обслуживание — замена ячеек",
-      "gridPos": {
-        "h": 3,
-        "w": 24,
-        "x": 0,
-        "y": 41
-      },
-      "options": {
-        "mode": "markdown",
-        "content": "**ratzek-2 — банки 08 и 09** деградировали (severe imbalance, пик отклонения 576 / 899 мВ от среднего) → **заменить в первую очередь**. Остальные 34 ячейки здоровы. Детали по ячейкам — дашборд [Daly BMS](/d/daly-bms/daly-bms) (ряд LTO diagnostics / Cell ranking, фильтр battery=ratzek-2). Помечено 2026-07-26."
-      }
-    },
-    {
       "type": "table",
       "id": 131,
       "title": "Packs — snapshot",
@@ -1139,7 +1124,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 41
       },
       "fieldConfig": {
         "defaults": {
@@ -1369,7 +1354,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 52
+        "y": 49
       },
       "fieldConfig": {
         "defaults": {
@@ -1418,7 +1403,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 52
+        "y": 49
       },
       "fieldConfig": {
         "defaults": {
@@ -1468,7 +1453,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 52
+        "y": 49
       },
       "fieldConfig": {
         "defaults": {
@@ -1532,7 +1517,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 56
+        "y": 53
       },
       "fieldConfig": {
         "defaults": {

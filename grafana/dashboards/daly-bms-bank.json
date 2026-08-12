@@ -748,7 +748,7 @@
       },
       "gridPos": {
         "h": 9,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 27
       },
@@ -832,9 +832,8 @@
           "interval": "1h"
         }
       ],
-      "timeFrom": "2d",
       "interval": "1h",
-      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). UTC-aligned."
+      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / day / ~30d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty)."
     },
     {
       "type": "timeseries",
@@ -846,8 +845,8 @@
       },
       "gridPos": {
         "h": 9,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 27
       },
       "fieldConfig": {
@@ -930,9 +929,105 @@
           "interval": "1d"
         }
       ],
-      "timeFrom": "30d",
       "interval": "1d",
-      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). UTC-aligned."
+      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / day / ~30d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty)."
+    },
+    {
+      "type": "timeseries",
+      "id": 126,
+      "title": "Energy per month (~30d, bank Σ, Wh)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 27
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watth",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "barAlignment": 0,
+            "axisCenteredZero": true,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[$__interval]))",
+          "refId": "A",
+          "legendFormat": "received",
+          "interval": "30d"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "-sum(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[$__interval]))",
+          "refId": "B",
+          "legendFormat": "spent",
+          "interval": "30d"
+        }
+      ],
+      "interval": "30d",
+      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / day / ~30d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty)."
     },
     {
       "type": "stat",

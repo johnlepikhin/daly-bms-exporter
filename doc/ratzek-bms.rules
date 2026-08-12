@@ -1,0 +1,56 @@
+# Canonical copy of the BMS/battery Prometheus alert rules for the ratzek deploy.
+#
+# Deployed to  ratzek:/etc/prometheus/rules/ratzek-bms.rules
+# Kept as a SEPARATE file (not in ratzek-site.rules) so re-deploys of the
+# host-managed ratzek-site.rules cannot revert our LTO-specific tuning —
+# Prometheus loads every /etc/prometheus/rules/*.rules.
+#
+# Thresholds reflect deliberate decisions (see memory: lto-inverter-constraints):
+#   - DeepDischarge is a BANK total (V*I summed across the 3 parallel packs).
+#   - BMSAlarm excludes transient diff_volt_* flags (real imbalance -> CellImbalance).
+#   - SOC alerts + ChargingCold are intentionally disabled (SOC unreliable; LTO not LFP).
+# This repo copy is the source of truth; sync changes here to the host.
+groups:
+  - name: ratzek-bms
+    rules:
+      - alert: RatzekBatteryVoltageLow
+        expr: daly_bms_pack_voltage_volts < 22.5
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "Напряжение АКБ [{{ $labels.battery }}] {{ $value | humanize }} В — пустая батарея / близко отсечка"
+
+      - alert: RatzekBatteryDeepDischarge
+        # bank total V*I; strong discharge = 250 W across the parallel bank
+        expr: sum(daly_bms_pack_voltage_volts * on(sn) daly_bms_current_amperes) < -250
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Глубокий разряд банка: {{ $value | humanize }} Вт"
+
+      - alert: RatzekBMSAlarm
+        # diff_volt_l1/l2 flap transiently → excluded; real imbalance = RatzekBMSCellImbalance
+        expr: daly_bms_alarm{type!~"diff_volt.*"} != 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Сработала защита BMS [{{ $labels.battery }}]: {{ $labels.type }}"
+
+      - alert: RatzekBMSCommsLost
+        expr: time() - daly_bms_last_frame_timestamp_seconds > 3600
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Нет телеметрии BMS [{{ $labels.battery }}] уже {{ $value | humanize }}с — слепы по питанию"
+
+      - alert: RatzekBMSCellImbalance
+        expr: daly_bms_cell_voltage_delta_volts > 0.4
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "Разбаланс ячеек АКБ [{{ $labels.battery }}]: разброс {{ $value | humanize }} В (слабая/деградирующая ячейка)"
+
+      # --- Intentionally DISABLED (do not re-enable without reason) ---
+      # RatzekBatterySOCCritical / RatzekBatterySOCLow: BMS SOC is unreliable on this
+      #   controller; empty-battery is caught by RatzekBatteryVoltageLow (measured).
+      # RatzekBMSChargingCold: LTO (not LFP) tolerates cold charging → false premise.

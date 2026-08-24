@@ -35,6 +35,33 @@ struct CoulombEntry {
     discharge_wh: f64,
 }
 
+/// Directional split of an integrated quantity: exactly one side is non-zero.
+/// Feeding current (A) yields amp-hours, feeding power (W) yields watt-hours.
+///
+/// A named type rather than a `(f64, f64)` tuple on purpose: the value is passed
+/// through three hops (integrate -> accumulate -> counter), and swapping the two
+/// sides anywhere would silently cross charge with discharge in *monotonic*
+/// counters — an error that cannot be undone once exported.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Split {
+    charge: f64,
+    discharge: f64,
+}
+
+impl std::ops::AddAssign for Split {
+    fn add_assign(&mut self, rhs: Self) {
+        self.charge += rhs.charge;
+        self.discharge += rhs.discharge;
+    }
+}
+
+impl std::ops::SubAssign for Split {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.charge -= rhs.charge;
+        self.discharge -= rhs.discharge;
+    }
+}
+
 /// Per-device record of which cell/sensor series currently exist, so we can
 /// remove series that disappear (e.g. cell count shrinks or device goes away).
 #[derive(Default)]
@@ -133,6 +160,28 @@ pub struct Metrics {
     seen: Mutex<HashMap<String, LastSeries>>,
 }
 
+/// Construction-time knobs for [`Metrics`], mirroring the corresponding
+/// [`crate::config::Config`] fields (see `impl From<&Config> for MetricsOptions`).
+#[derive(Debug, Clone)]
+pub struct MetricsOptions {
+    /// Integration-interval cap for the coulomb counter (seconds).
+    pub coulomb_max_gap_secs: f64,
+    /// Hard cap on distinct tracked serials (`0` = unlimited).
+    pub max_devices: usize,
+    /// If set, coulomb/energy totals are persisted here and restored on startup.
+    pub coulomb_state_path: Option<PathBuf>,
+}
+
+impl Default for MetricsOptions {
+    fn default() -> Self {
+        Self {
+            coulomb_max_gap_secs: 900.0,
+            max_devices: 64,
+            coulomb_state_path: None,
+        }
+    }
+}
+
 /// Register a `GaugeVec` on the registry (name collisions are a startup bug).
 fn register_gauge_vec(reg: &Registry, name: &str, help: &str, labels: &[&str]) -> GaugeVec {
     let m = GaugeVec::new(Opts::new(name, help), labels).expect("valid metric");
@@ -164,23 +213,21 @@ fn register_counter_vec(reg: &Registry, name: &str, help: &str, labels: &[&str])
 }
 
 impl Metrics {
-    /// Construct the metric registry and all metric families.
-    ///
-    /// `coulomb_max_gap_secs` caps the coulomb-counter integration interval
-    /// (seconds); `max_devices` is a hard cap on distinct tracked serials
-    /// (`0` = unlimited); `coulomb_state_path`, if set, persists the coulomb
-    /// totals to that file (call [`Metrics::restore_coulombs`] after construction).
+    /// Construct the metric registry and all metric families. See
+    /// [`MetricsOptions`] for the knobs; when `coulomb_state_path` is set, call
+    /// [`Metrics::restore_coulombs`] right after construction.
     ///
     /// # Panics
     ///
     /// Panics only at startup if a metric name is duplicate or invalid (a
     /// programming bug).
     #[expect(clippy::too_many_lines)]
-    pub fn new(
-        coulomb_max_gap_secs: f64,
-        max_devices: usize,
-        coulomb_state_path: Option<PathBuf>,
-    ) -> Self {
+    pub fn new(opts: MetricsOptions) -> Self {
+        let MetricsOptions {
+            coulomb_max_gap_secs,
+            max_devices,
+            coulomb_state_path,
+        } = opts;
         let r = Registry::new();
         Self {
             pack_voltage: register_gauge_vec(
@@ -785,28 +832,33 @@ fn sync_indexed(vec: &GaugeVec, sn: &str, prev: &mut Vec<u32>, cur: &[(u32, f64)
 }
 
 /// Trapezoidal integral of a signed quantity over an interval, in per-hour units,
-/// split by direction. Returns `(positive, negative)` (one is always zero). Feed
-/// current (A) to get amp-hours, or power (W = V*I) to get watt-hours. `dt` is
-/// clamped to `max_gap` so a data gap doesn't integrate a stale reading;
-/// non-positive `dt` yields zero.
-fn trapezoid_hours(prev: f64, cur: f64, dt_secs: f64, max_gap: f64) -> (f64, f64) {
+/// split by direction (one side is always zero). Feed current (A) to get
+/// amp-hours, or power (W = V*I) to get watt-hours. `dt` is clamped to `max_gap`
+/// so a data gap doesn't integrate a stale reading; non-positive `dt` yields zero.
+fn trapezoid_hours(prev: f64, cur: f64, dt_secs: f64, max_gap: f64) -> Split {
     if dt_secs <= 0.0 {
-        return (0.0, 0.0);
+        return Split::default();
     }
     let dt = dt_secs.min(max_gap);
     let value = (prev + cur) / 2.0 * dt / 3600.0;
     if value >= 0.0 {
-        (value, 0.0)
+        Split {
+            charge: value,
+            discharge: 0.0,
+        }
     } else {
-        (0.0, -value)
+        Split {
+            charge: 0.0,
+            discharge: -value,
+        }
     }
 }
 
-/// Add a `(positive, negative)` split (from [`trapezoid_hours`]) onto a pair of
-/// direction counters for one device, skipping zero increments.
-fn add_split(positive: &CounterVec, negative: &CounterVec, sn: &str, split: (f64, f64)) {
-    inc_if_positive(positive, sn, split.0);
-    inc_if_positive(negative, sn, split.1);
+/// Add a [`Split`] (from [`trapezoid_hours`]) onto a pair of direction counters
+/// for one device, skipping zero increments.
+fn add_split(charge: &CounterVec, discharge: &CounterVec, sn: &str, split: Split) {
+    inc_if_positive(charge, sn, split.charge);
+    inc_if_positive(discharge, sn, split.discharge);
 }
 
 /// Increment a counter for `sn` by `v` when `v > 0` (a `CounterVec` panics on a
@@ -850,7 +902,7 @@ mod tests {
 
     #[test]
     fn render_contains_updated_series() {
-        let m = Metrics::new(900.0, 1024, None);
+        let m = Metrics::new(MetricsOptions::default());
         let data = RealtimeData {
             pack_v: Some(26.9),
             ..Default::default()
@@ -865,7 +917,7 @@ mod tests {
 
     #[test]
     fn stale_cell_series_are_pruned() {
-        let m = Metrics::new(900.0, 1024, None);
+        let m = Metrics::new(MetricsOptions::default());
         let d3 = RealtimeData {
             cells_v: vec![(1, 2.0), (2, 2.0), (3, 2.0)],
             ..Default::default()
@@ -883,7 +935,7 @@ mod tests {
 
     #[test]
     fn alarm_bits_decode_to_labelled_flags() {
-        let m = Metrics::new(900.0, 1024, None);
+        let m = Metrics::new(MetricsOptions::default());
         let data = RealtimeData {
             alarm_bits: Some(0x0300),
             ..Default::default()
@@ -896,22 +948,26 @@ mod tests {
 
     #[test]
     fn trapezoid_hours_directions_and_gap_cap() {
+        let charge = |v: f64| Split {
+            charge: v,
+            discharge: 0.0,
+        };
         // 10 A charge for 1 h, but dt capped to 900 s -> 10*900/3600 = 2.5 Ah.
-        assert_eq!(trapezoid_hours(10.0, 10.0, 3600.0, 900.0), (2.5, 0.0));
+        assert_eq!(trapezoid_hours(10.0, 10.0, 3600.0, 900.0), charge(2.5));
         // -20 A discharge for 900 s -> 5.0 Ah discharge.
-        let (c, d) = trapezoid_hours(-20.0, -20.0, 900.0, 900.0);
-        assert!(c == 0.0 && (d - 5.0).abs() < 1e-9);
+        let s = trapezoid_hours(-20.0, -20.0, 900.0, 900.0);
+        assert!(s.charge == 0.0 && (s.discharge - 5.0).abs() < 1e-9);
         // Non-positive dt -> nothing.
-        assert_eq!(trapezoid_hours(10.0, 10.0, 0.0, 900.0), (0.0, 0.0));
+        assert_eq!(trapezoid_hours(10.0, 10.0, 0.0, 900.0), Split::default());
         // Trapezoidal average across a sign change (avg = 0) -> nothing.
-        assert_eq!(trapezoid_hours(10.0, -10.0, 100.0, 900.0), (0.0, 0.0));
+        assert_eq!(trapezoid_hours(10.0, -10.0, 100.0, 900.0), Split::default());
         // Fed power (260 W = 10 A * 26 V) for 900 s -> 65 Wh.
-        assert_eq!(trapezoid_hours(260.0, 260.0, 900.0, 900.0), (65.0, 0.0));
+        assert_eq!(trapezoid_hours(260.0, 260.0, 900.0, 900.0), charge(65.0));
     }
 
     #[test]
     fn accumulate_coulombs_integrates_charge_and_energy() {
-        let m = Metrics::new(900.0, 1024, None);
+        let m = Metrics::new(MetricsOptions::default());
         // First frame just sets the baseline (no increment).
         m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
         // Second frame 3600 s later at 10 A / 26 V -> dt capped to 900 s ->
@@ -930,7 +986,7 @@ mod tests {
 
     #[test]
     fn accumulate_coulombs_discharge_and_skips_energy_without_voltage() {
-        let m = Metrics::new(900.0, 1024, None);
+        let m = Metrics::new(MetricsOptions::default());
         // Discharge with voltage: -10 A / 26 V over 900 s -> 2.5 Ah and 65 Wh discharge.
         m.accumulate_coulombs("SN1", Some(-10.0), Some(26.0), 1_000.0);
         m.accumulate_coulombs("SN1", Some(-10.0), Some(26.0), 1_000.0 + 900.0);
@@ -962,12 +1018,18 @@ mod tests {
         let path = std::env::temp_dir().join("daly-bms-energy-persist-test.json");
         let _ = std::fs::remove_file(&path);
         {
-            let m = Metrics::new(900.0, 1024, Some(path.clone()));
+            let m = Metrics::new(MetricsOptions {
+                coulomb_state_path: Some(path.clone()),
+                ..Default::default()
+            });
             m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0); // baseline
             m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 3600.0); // +2.5 Ah / 65 Wh
         }
         // A fresh instance (simulating a restart) restores both totals.
-        let m2 = Metrics::new(900.0, 1024, Some(path.clone()));
+        let m2 = Metrics::new(MetricsOptions {
+            coulomb_state_path: Some(path.clone()),
+            ..Default::default()
+        });
         m2.restore_coulombs();
         let body = m2.render().1;
         assert!(
@@ -994,14 +1056,20 @@ mod tests {
 
     #[test]
     fn admit_caps_distinct_devices() {
-        let m = Metrics::new(900.0, 2, None);
+        let m = Metrics::new(MetricsOptions {
+            max_devices: 2,
+            ..Default::default()
+        });
         // admit reserves the slot, so devices that never decode still count.
         assert!(m.admit("A"), "1st device reserved");
         assert!(m.admit("B"), "2nd device reserved");
         assert!(m.admit("A"), "known device stays admitted");
         assert!(!m.admit("C"), "3rd distinct device rejected at cap");
 
-        let unlimited = Metrics::new(900.0, 0, None);
+        let unlimited = Metrics::new(MetricsOptions {
+            max_devices: 0,
+            ..Default::default()
+        });
         assert!(unlimited.admit("anything"), "0 = unlimited");
         assert!(unlimited.admit("another"));
     }

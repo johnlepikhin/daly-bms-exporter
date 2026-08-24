@@ -42,11 +42,7 @@ async fn main() -> anyhow::Result<()> {
         "configuration loaded"
     );
 
-    let metrics = Arc::new(Metrics::new(
-        config.coulomb_max_gap_secs as f64,
-        config.max_devices,
-        config.coulomb_state_path.clone(),
-    ));
+    let metrics = Arc::new(Metrics::new((&config).into()));
     // Restore persisted coulomb totals (if configured) before serving scrapes.
     metrics.restore_coulombs();
 

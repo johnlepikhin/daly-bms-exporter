@@ -40,11 +40,7 @@ fn realtime_frame() -> String {
 
 fn app(config: Config) -> axum::Router {
     let state = AppState {
-        metrics: Arc::new(Metrics::new(
-            config.coulomb_max_gap_secs as f64,
-            config.max_devices,
-            config.coulomb_state_path.clone(),
-        )),
+        metrics: Arc::new(Metrics::new((&config).into())),
         config: Arc::new(config),
     };
     router(state)

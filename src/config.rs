@@ -90,6 +90,20 @@ impl Config {
     }
 }
 
+/// Mapping config -> metrics knobs. It lives here rather than in `metrics.rs` so
+/// that module stays independent of the YAML layer (`config` imports nothing
+/// from the crate, so this direction cannot cycle). It cannot live in `main.rs`
+/// either — both types would be foreign there (orphan rule).
+impl From<&Config> for crate::metrics::MetricsOptions {
+    fn from(c: &Config) -> Self {
+        Self {
+            coulomb_max_gap_secs: c.coulomb_max_gap_secs as f64,
+            max_devices: c.max_devices,
+            coulomb_state_path: c.coulomb_state_path.clone(),
+        }
+    }
+}
+
 /// A serial must be a short ASCII-alphanumeric token. This is the first line of
 /// defence against an untrusted `Sn` exploding label cardinality.
 fn is_plausible_serial(sn: &str) -> bool {

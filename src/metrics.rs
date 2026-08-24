@@ -862,13 +862,18 @@ impl Metrics {
                 state.devices.insert(
                     sn.clone(),
                     CoulombEntry {
-                        charge_ah: self.charge_amp_hours.with_label_values(&[sn]).get() + ah.charge,
-                        discharge_ah: self.discharge_amp_hours.with_label_values(&[sn]).get()
-                            + ah.discharge,
-                        charge_wh: self.charge_watt_hours.with_label_values(&[sn]).get()
-                            + wh.charge,
-                        discharge_wh: self.discharge_watt_hours.with_label_values(&[sn]).get()
-                            + wh.discharge,
+                        charge_ah: bump_ulp(
+                            self.charge_amp_hours.with_label_values(&[sn]).get() + ah.charge,
+                        ),
+                        discharge_ah: bump_ulp(
+                            self.discharge_amp_hours.with_label_values(&[sn]).get() + ah.discharge,
+                        ),
+                        charge_wh: bump_ulp(
+                            self.charge_watt_hours.with_label_values(&[sn]).get() + wh.charge,
+                        ),
+                        discharge_wh: bump_ulp(
+                            self.discharge_watt_hours.with_label_values(&[sn]).get() + wh.discharge,
+                        ),
                     },
                 );
             }
@@ -1101,6 +1106,26 @@ fn write_file_durable(path: &Path, bytes: &[u8]) -> Result<(), (WriteStage, std:
         return Err((WriteStage::DirSync, e));
     }
     Ok(())
+}
+
+/// Nudge a persisted total up by one ULP.
+///
+/// Belt and braces behind the `float_roundtrip` feature and the write-ahead
+/// order: it keeps the file strictly above the exported value even if a future
+/// serializer, a dropped cargo feature or a hand-edited file loses the last bit.
+/// Prometheus reads *any* counter decrease as a reset and adds the whole total
+/// to `increase()`, so a single lost bit is worth a whole phantom spike — that
+/// is precisely how the +20 kWh bar of 2026-08-22 came about.
+///
+/// The cost is ~1e-12 Wh per restart, and it does not accumulate: every write
+/// recomputes the file from the live counter rather than from its own output.
+fn bump_ulp(v: f64) -> f64 {
+    if v.is_finite() && v > 0.0 {
+        let up = v.next_up();
+        if up.is_finite() { up } else { v }
+    } else {
+        v
+    }
 }
 
 /// Take the pending deltas of every tracked device, zeroing them in the guard.
@@ -1505,6 +1530,18 @@ mod tests {
         m.persist_coulombs();
         assert_eq!(counters(&m, "SN1"), once, "second persist double-counted");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn bump_ulp_is_monotonic_and_safe() {
+        assert!(bump_ulp(1.0) > 1.0);
+        assert!(
+            bump_ulp(1.0) - 1.0 < 1e-15,
+            "nudge must be one ULP, not more"
+        );
+        assert_eq!(bump_ulp(0.0), 0.0, "an untouched counter must stay at zero");
+        assert_eq!(bump_ulp(-1.0), -1.0);
+        assert!(bump_ulp(f64::MAX).is_finite(), "must not overflow to +Inf");
     }
 
     #[test]

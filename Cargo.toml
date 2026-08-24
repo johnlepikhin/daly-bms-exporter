@@ -1,6 +1,7 @@
 [package]
 authors = ["Evgenii Lepikhin <johnlepikhin@gmail.com>"]
 edition = "2024"
+rust-version = "1.86"    # f64::next_up (metrics::bump_ulp)
 name = "daly-bms-exporter"
 version = "0.1.5"
 description = "Prometheus exporter for Daly BMS telemetry (Hlktech WiFi module)"

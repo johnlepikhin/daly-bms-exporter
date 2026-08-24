@@ -42,6 +42,12 @@ pub struct Config {
     /// on startup, so charge/discharge totals survive restarts. `None` disables
     /// persistence (counters reset on restart).
     pub coulomb_state_path: Option<PathBuf>,
+    /// Minimum interval between durable writes of the state file. Increments
+    /// arriving inside the window are held in memory and applied to the exported
+    /// counters only after the next successful write, so nothing is lost — but a
+    /// `SIGKILL` drops up to one window's worth, so keep this below the device's
+    /// frame interval. Clamped to `1..=3600`.
+    pub coulomb_state_min_interval_secs: u64,
 }
 
 impl Default for Config {
@@ -56,6 +62,7 @@ impl Default for Config {
             coulomb_max_gap_secs: 900,
             max_devices: 64,
             coulomb_state_path: None,
+            coulomb_state_min_interval_secs: 5,
         }
     }
 }
@@ -69,10 +76,31 @@ impl Config {
     /// Returns [`ConfigError::Io`] if the file exists but cannot be read, and
     /// [`ConfigError::Parse`] if its contents are not valid YAML for [`Config`].
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Ok(serde_norway::from_str(&text).map_err(ConfigError::from)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e.into()),
+        let mut cfg = match std::fs::read_to_string(path) {
+            Ok(text) => serde_norway::from_str::<Self>(&text).map_err(ConfigError::from)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(e) => return Err(e.into()),
+        };
+        cfg.clamp_to_sane_ranges();
+        Ok(cfg)
+    }
+
+    /// Replace out-of-range values with their defaults, warning about each.
+    ///
+    /// These knobs are not merely cosmetic: `0` for the write interval removes
+    /// the only rate limit on fsyncs triggered by unauthenticated input, and a
+    /// value of, say, 86400 would silently turn `/metrics` into a day-stale
+    /// feed. Rejecting the file outright would be worse — the exporter would
+    /// refuse to start over a typo — so clamp and say so.
+    fn clamp_to_sane_ranges(&mut self) {
+        let d = Self::default();
+        if !(1..=3600).contains(&self.coulomb_state_min_interval_secs) {
+            tracing::warn!(
+                value = self.coulomb_state_min_interval_secs,
+                default = d.coulomb_state_min_interval_secs,
+                "coulomb_state_min_interval_secs out of range 1..=3600; using the default"
+            );
+            self.coulomb_state_min_interval_secs = d.coulomb_state_min_interval_secs;
         }
     }
 
@@ -100,6 +128,7 @@ impl From<&Config> for crate::metrics::MetricsOptions {
             coulomb_max_gap_secs: c.coulomb_max_gap_secs as f64,
             max_devices: c.max_devices,
             coulomb_state_path: c.coulomb_state_path.clone(),
+            state_min_interval: std::time::Duration::from_secs(c.coulomb_state_min_interval_secs),
         }
     }
 }

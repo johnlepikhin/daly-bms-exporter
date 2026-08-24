@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use prometheus::{
     CounterVec, Encoder, Gauge, GaugeVec, IntCounterVec, IntGaugeVec, Opts, Registry, TextEncoder,
@@ -82,6 +82,33 @@ struct LastSeries {
     /// populate the `serial` label of `daly_bms_device_info`. `None` until a
     /// realtime frame carrying a serial has been seen.
     realtime_serial: Option<String>,
+    /// Deltas already integrated but NOT yet applied to the exported counters.
+    /// They are applied only once the state file holding them has been durably
+    /// written, so the file can never be behind what /metrics has served.
+    pending_ah: Split,
+    pending_wh: Split,
+}
+
+impl LastSeries {
+    /// Whether this device has deltas waiting for a durable write.
+    fn has_pending(&self) -> bool {
+        self.pending_ah != Split::default() || self.pending_wh != Split::default()
+    }
+}
+
+/// Everything guarded by the single coulomb mutex. Keeping the throttle
+/// timestamp inside the same guard (rather than in a second mutex) makes the
+/// "always locked together" rule structural instead of a comment.
+#[derive(Default)]
+struct CoulombGuard {
+    devices: HashMap<String, LastSeries>,
+    /// Monotonic time of the last successful state write. `Instant`, not wall
+    /// clock, so a system-time jump cannot stall or spam the writes.
+    last_persist_at: Option<Instant>,
+    /// Set while a write is in flight (the lock is released across the fsync).
+    /// Guards against two writers applying overlapping pending snapshots and
+    /// double-counting them into the monotonic counters.
+    writing: bool,
 }
 
 /// Seconds since the Unix epoch as a float.
@@ -162,7 +189,9 @@ pub struct Metrics {
     max_devices: usize,
     /// If set, coulomb totals are persisted here and restored on startup.
     coulomb_state_path: Option<PathBuf>,
-    seen: Mutex<HashMap<String, LastSeries>>,
+    /// Minimum interval between durable state writes.
+    state_min_interval: Duration,
+    seen: Mutex<CoulombGuard>,
 }
 
 /// Construction-time knobs for [`Metrics`], mirroring the corresponding
@@ -175,6 +204,9 @@ pub struct MetricsOptions {
     pub max_devices: usize,
     /// If set, coulomb/energy totals are persisted here and restored on startup.
     pub coulomb_state_path: Option<PathBuf>,
+    /// Minimum interval between durable writes of the state file. Deltas
+    /// arriving inside the window are held in memory, not lost.
+    pub state_min_interval: Duration,
 }
 
 impl Default for MetricsOptions {
@@ -183,6 +215,7 @@ impl Default for MetricsOptions {
             coulomb_max_gap_secs: 900.0,
             max_devices: 64,
             coulomb_state_path: None,
+            state_min_interval: Duration::from_secs(5),
         }
     }
 }
@@ -238,6 +271,7 @@ impl Metrics {
             coulomb_max_gap_secs,
             max_devices,
             coulomb_state_path,
+            state_min_interval,
         } = opts;
         let r = Registry::new();
         Self {
@@ -520,8 +554,9 @@ impl Metrics {
             coulomb_max_gap_secs,
             max_devices,
             coulomb_state_path,
+            state_min_interval,
             registry: r,
-            seen: Mutex::new(HashMap::new()),
+            seen: Mutex::new(CoulombGuard::default()),
         }
     }
 
@@ -533,14 +568,14 @@ impl Metrics {
             return true;
         }
         let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
-        if seen.contains_key(sn) {
+        if seen.devices.contains_key(sn) {
             return true;
         }
-        if seen.len() < self.max_devices {
+        if seen.devices.len() < self.max_devices {
             // Reserve the slot now, so that even frames which never decode (and
             // thus never reach `update_*`) still count against the cap — e.g.
             // `mark_seen` mints an `sn`-labelled series unconditionally.
-            seen.insert(sn.to_string(), LastSeries::default());
+            seen.devices.insert(sn.to_string(), LastSeries::default());
             true
         } else {
             false
@@ -553,13 +588,13 @@ impl Metrics {
             let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
             // Avoid allocating a String key on every frame: only insert when the
             // device is new, then take a mutable borrow of the existing entry.
-            if !seen.contains_key(sn) {
-                if self.max_devices != 0 && seen.len() >= self.max_devices {
+            if !seen.devices.contains_key(sn) {
+                if self.max_devices != 0 && seen.devices.len() >= self.max_devices {
                     return; // cap reached; do not create a new device entry
                 }
-                seen.insert(sn.to_string(), LastSeries::default());
+                seen.devices.insert(sn.to_string(), LastSeries::default());
             }
-            let entry = seen.get_mut(sn).expect("just inserted or present");
+            let entry = seen.devices.get_mut(sn).expect("just inserted or present");
 
             entry.realtime_serial = d.serial.clone();
             sync_indexed(&self.cell_voltage, sn, &mut entry.cells, &d.cells_v);
@@ -630,13 +665,13 @@ impl Metrics {
         // build+prune+set runs under the `seen` lock so the metric mutation is
         // serialized with the tracked-identity state.
         let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
-        if !seen.contains_key(sn) {
-            if self.max_devices != 0 && seen.len() >= self.max_devices {
+        if !seen.devices.contains_key(sn) {
+            if self.max_devices != 0 && seen.devices.len() >= self.max_devices {
                 return; // cap reached; do not create a new device entry
             }
-            seen.insert(sn.to_string(), LastSeries::default());
+            seen.devices.insert(sn.to_string(), LastSeries::default());
         }
-        let entry = seen.get_mut(sn).expect("just inserted or present");
+        let entry = seen.devices.get_mut(sn).expect("just inserted or present");
 
         // Surface the real decoded pack serial when a realtime frame has
         // supplied one; otherwise fall back to the transport-level `sn`.
@@ -685,6 +720,10 @@ impl Metrics {
     /// Note: energy = current × voltage, so a single anomalous frame inflates the
     /// monotonic Wh counter more than the Ah counter. The gap-cap bounds the
     /// interval but not the magnitude — same trade-off the Ah counter already has.
+    ///
+    /// The integrated deltas are not applied to the exported counters here; they
+    /// are staged as `pending` and applied by [`Metrics::flush_coulomb_state`]
+    /// once the state file containing them has been durably written.
     pub fn accumulate_coulombs(
         &self,
         sn: &str,
@@ -693,34 +732,32 @@ impl Metrics {
         now_secs: f64,
     ) {
         let Some(cur) = current_a else { return };
-        let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
-        if !seen.contains_key(sn) {
-            if self.max_devices != 0 && seen.len() >= self.max_devices {
-                return; // cap reached; do not create a new device entry
+        {
+            let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+            if !seen.devices.contains_key(sn) {
+                if self.max_devices != 0 && seen.devices.len() >= self.max_devices {
+                    return; // cap reached; do not create a new device entry
+                }
+                seen.devices.insert(sn.to_string(), LastSeries::default());
             }
-            seen.insert(sn.to_string(), LastSeries::default());
-        }
-        let entry = seen.get_mut(sn).expect("just inserted or present");
-        let gap = self.coulomb_max_gap_secs;
-        // Single block (avoids a nested `if let` → clippy::collapsible_if): integrate
-        // Ah from current, and Wh from power when both endpoint voltages are known.
-        if let (Some(last_ts), Some(last_cur)) = (entry.last_coulomb_ts, entry.last_current) {
-            let dt = now_secs - last_ts;
-            let ah = trapezoid_hours(last_cur, cur, dt, gap);
-            add_split(&self.charge_amp_hours, &self.discharge_amp_hours, sn, ah);
-            if let (Some(last_pv), Some(pv)) = (entry.last_pack_v, pack_v) {
-                // Power = V*I; trapezoid of power over the interval → watt-hours.
-                let wh = trapezoid_hours(last_cur * last_pv, cur * pv, dt, gap);
-                add_split(&self.charge_watt_hours, &self.discharge_watt_hours, sn, wh);
+            let gap = self.coulomb_max_gap_secs;
+            let entry = seen.devices.get_mut(sn).expect("just inserted or present");
+            // Single block (avoids a nested `if let` → clippy::collapsible_if): integrate
+            // Ah from current, and Wh from power when both endpoint voltages are known.
+            if let (Some(last_ts), Some(last_cur)) = (entry.last_coulomb_ts, entry.last_current) {
+                let dt = now_secs - last_ts;
+                entry.pending_ah += trapezoid_hours(last_cur, cur, dt, gap);
+                if let (Some(last_pv), Some(pv)) = (entry.last_pack_v, pack_v) {
+                    // Power = V*I; trapezoid of power over the interval → watt-hours.
+                    entry.pending_wh += trapezoid_hours(last_cur * last_pv, cur * pv, dt, gap);
+                }
             }
+            entry.last_coulomb_ts = Some(now_secs);
+            entry.last_current = Some(cur);
+            // Only updated on frames that carry current (early return on None above).
+            entry.last_pack_v = pack_v;
         }
-        entry.last_coulomb_ts = Some(now_secs);
-        entry.last_current = Some(cur);
-        // Only updated on frames that carry current (early return on None above).
-        entry.last_pack_v = pack_v;
-        // The mutable borrow of `entry` ends here; persist the totals (no-op if
-        // persistence is not configured) while still holding the `seen` lock.
-        self.write_coulomb_state(&seen);
+        self.flush_coulomb_state(false);
     }
 
     /// Restore the persisted counters from `coulomb_state_path` (if configured),
@@ -753,7 +790,7 @@ impl Metrics {
         for (sn, e) in &state.devices {
             // Honour the same cardinality bound as `admit`/`accumulate_coulombs`:
             // never restore more distinct serials than the cap allows.
-            if self.max_devices != 0 && seen.len() >= self.max_devices {
+            if self.max_devices != 0 && seen.devices.len() >= self.max_devices {
                 tracing::warn!(sn = ?sn, "restored state exceeds max_devices cap; skipping serial");
                 continue;
             }
@@ -762,55 +799,145 @@ impl Metrics {
             inc_if_positive(&self.charge_watt_hours, sn, e.charge_wh);
             inc_if_positive(&self.discharge_watt_hours, sn, e.discharge_wh);
             // Track the serial so future writes keep persisting it.
-            seen.entry(sn.clone()).or_default();
+            seen.devices.entry(sn.clone()).or_default();
             restored += 1;
         }
         tracing::info!(devices = restored, "restored coulomb/energy counters");
     }
 
-    /// Persist the coulomb counters now (e.g. on graceful shutdown). No-op if
-    /// persistence is not configured.
+    /// Persist the coulomb counters now (e.g. on graceful shutdown), bypassing
+    /// the write throttle. No-op if persistence is not configured.
     pub fn persist_coulombs(&self) {
-        let seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
-        self.write_coulomb_state(&seen);
+        self.flush_coulomb_state(true);
     }
 
-    /// Durably write the coulomb totals of all tracked devices to
-    /// `coulomb_state_path`. Must be called while holding the `seen` lock.
-    fn write_coulomb_state(&self, seen: &HashMap<String, LastSeries>) {
-        let Some(path) = &self.coulomb_state_path else {
+    /// Durably write the pending coulomb/energy totals and, on success, apply
+    /// them to the exported counters.
+    ///
+    /// The invariant this exists for: a counter is advanced only after a file
+    /// already containing that value has been fsynced, so the on-disk value can
+    /// never be lower than what `/metrics` has served. A counter that comes back
+    /// lower after a restart is read by Prometheus as a reset, which adds the
+    /// entire accumulated total to `increase()` — a 20 kWh phantom in practice.
+    ///
+    /// The file is written with the lock *released*: `main` runs a
+    /// `current_thread` runtime and this is called from inside an HTTP handler,
+    /// so holding the lock across two fsyncs would stall every other connection,
+    /// `/metrics` included. Correctness does not depend on the lock being held —
+    /// the pending snapshot is applied only after the write succeeds, and a
+    /// concurrent writer is excluded by the `writing` flag.
+    fn flush_coulomb_state(&self, force: bool) {
+        let Some(path) = self.coulomb_state_path.clone() else {
+            // No persistence configured: nothing can be durably written, so the
+            // deltas would never be exported. Apply them immediately instead.
+            //
+            // This must return before any `with_label_values` below, or devices
+            // reporting no pack voltage would get an empty watt-hour series.
+            let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+            let snapshot = pending_snapshot(&mut seen);
+            drop(seen);
+            self.apply_pending(&snapshot);
             return;
         };
-        let mut state = CoulombState::default();
-        for sn in seen.keys() {
-            state.devices.insert(
-                sn.clone(),
-                CoulombEntry {
-                    charge_ah: self.charge_amp_hours.with_label_values(&[sn]).get(),
-                    discharge_ah: self.discharge_amp_hours.with_label_values(&[sn]).get(),
-                    charge_wh: self.charge_watt_hours.with_label_values(&[sn]).get(),
-                    discharge_wh: self.discharge_watt_hours.with_label_values(&[sn]).get(),
-                },
-            );
-        }
-        let bytes = match serde_json::to_vec(&state) {
-            Ok(b) => b,
-            Err(e) => {
-                self.record_write_error(WriteStage::Serialize, &std::io::Error::other(e), path);
-                return;
+
+        // Phase 1: decide whether to write, and build the payload under the lock.
+        let (bytes, snapshot) = {
+            let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+            if seen.writing {
+                return; // another writer is mid-flush; its snapshot covers ours
+            }
+            if !force {
+                if !seen.devices.values().any(LastSeries::has_pending) {
+                    return; // nothing to write; do not fsync on idle frames
+                }
+                if let Some(last) = seen.last_persist_at
+                    && last.elapsed() < self.state_min_interval
+                {
+                    return; // throttled: the delta stays pending, it is not lost
+                }
+            }
+            let snapshot = pending_snapshot(&mut seen);
+            let mut state = CoulombState::default();
+            for (sn, ah, wh) in &snapshot {
+                state.devices.insert(
+                    sn.clone(),
+                    CoulombEntry {
+                        charge_ah: self.charge_amp_hours.with_label_values(&[sn]).get() + ah.charge,
+                        discharge_ah: self.discharge_amp_hours.with_label_values(&[sn]).get()
+                            + ah.discharge,
+                        charge_wh: self.charge_watt_hours.with_label_values(&[sn]).get()
+                            + wh.charge,
+                        discharge_wh: self.discharge_watt_hours.with_label_values(&[sn]).get()
+                            + wh.discharge,
+                    },
+                );
+            }
+            match serde_json::to_vec(&state) {
+                Ok(b) => {
+                    seen.writing = true;
+                    (b, snapshot)
+                }
+                Err(e) => {
+                    self.record_write_error(
+                        WriteStage::Serialize,
+                        &std::io::Error::other(e),
+                        &path,
+                    );
+                    self.restore_pending(&mut seen, &snapshot);
+                    return;
+                }
             }
         };
-        match write_file_durable(path, &bytes) {
-            Ok(()) => self.state_last_write_timestamp.set(now_unix_secs()),
+
+        // Phase 2: the actual fsync, outside the lock.
+        let written = match write_file_durable(&path, &bytes) {
+            Ok(()) => true,
             // The rename is already committed, so the state file is up to date;
             // report the failed directory fsync but treat the write as done,
             // otherwise a filesystem that cannot fsync directories would freeze
             // energy accounting forever.
             Err((stage @ WriteStage::DirSync, e)) => {
-                self.record_write_error(stage, &e, path);
-                self.state_last_write_timestamp.set(now_unix_secs());
+                self.record_write_error(stage, &e, &path);
+                true
             }
-            Err((stage, e)) => self.record_write_error(stage, &e, path),
+            Err((stage, e)) => {
+                self.record_write_error(stage, &e, &path);
+                false
+            }
+        };
+
+        // Phase 3: advance the counters only now that the file holds the value.
+        let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+        seen.writing = false;
+        if written {
+            seen.last_persist_at = Some(Instant::now());
+            drop(seen);
+            self.state_last_write_timestamp.set(now_unix_secs());
+            self.apply_pending(&snapshot);
+        } else {
+            // Keep the deltas queued for the next attempt. Applying them anyway
+            // would put the counters ahead of the file, which is exactly the
+            // phantom-spike condition after the next restart.
+            self.restore_pending(&mut seen, &snapshot);
+        }
+    }
+
+    /// Add a taken pending snapshot onto the exported counters.
+    fn apply_pending(&self, snapshot: &[(String, Split, Split)]) {
+        for (sn, ah, wh) in snapshot {
+            add_split(&self.charge_amp_hours, &self.discharge_amp_hours, sn, *ah);
+            add_split(&self.charge_watt_hours, &self.discharge_watt_hours, sn, *wh);
+        }
+    }
+
+    /// Put a taken pending snapshot back after a failed write, so the deltas are
+    /// retried rather than lost.
+    fn restore_pending(&self, seen: &mut CoulombGuard, snapshot: &[(String, Split, Split)]) {
+        for (sn, ah, wh) in snapshot {
+            if let Some(e) = seen.devices.get_mut(sn) {
+                e.pending_ah += *ah;
+                e.pending_wh += *wh;
+            }
         }
     }
 
@@ -976,6 +1103,25 @@ fn write_file_durable(path: &Path, bytes: &[u8]) -> Result<(), (WriteStage, std:
     Ok(())
 }
 
+/// Take the pending deltas of every tracked device, zeroing them in the guard.
+///
+/// Every device is listed, not just the ones with pending deltas: the caller
+/// writes the whole state file, so it needs a row per tracked serial. Taking the
+/// deltas out (rather than reading them in place) is what lets the write happen
+/// with the lock released — a frame arriving meanwhile accumulates on top of a
+/// zeroed field and is picked up by the next flush.
+fn pending_snapshot(seen: &mut CoulombGuard) -> Vec<(String, Split, Split)> {
+    seen.devices
+        .iter_mut()
+        .map(|(sn, e)| {
+            let taken = (sn.clone(), e.pending_ah, e.pending_wh);
+            e.pending_ah = Split::default();
+            e.pending_wh = Split::default();
+            taken
+        })
+        .collect()
+}
+
 /// Add a [`Split`] (from [`trapezoid_hours`]) onto a pair of direction counters
 /// for one device, skipping zero increments.
 fn add_split(charge: &CounterVec, discharge: &CounterVec, sn: &str, split: Split) {
@@ -1137,8 +1283,7 @@ mod tests {
 
     #[test]
     fn coulomb_and_energy_state_persist_across_restart() {
-        let path = std::env::temp_dir().join("daly-bms-energy-persist-test.json");
-        let _ = std::fs::remove_file(&path);
+        let path = temp_state_path("energy-persist");
         {
             let m = Metrics::new(MetricsOptions {
                 coulomb_state_path: Some(path.clone()),
@@ -1154,14 +1299,211 @@ mod tests {
         });
         m2.restore_coulombs();
         let body = m2.render().1;
-        assert!(
-            body.contains("daly_bms_charge_amp_hours_total{sn=\"SN1\"} 2.5"),
-            "restored body: {body}"
+        // Compare parsed values, not string prefixes: the persisted totals are
+        // nudged up by one ULP, so `contains("} 65")` would pass on 65.00000001
+        // and hide a real drift.
+        let ah = metric_value(&body, "daly_bms_charge_amp_hours_total{sn=\"SN1\"}")
+            .unwrap_or_else(|| panic!("no amp-hour series: {body}"));
+        let wh = metric_value(&body, "daly_bms_charge_watt_hours_total{sn=\"SN1\"}")
+            .unwrap_or_else(|| panic!("no watt-hour series: {body}"));
+        assert!((ah - 2.5).abs() < 1e-9, "restored {ah} Ah");
+        assert!((wh - 65.0).abs() < 1e-9, "restored {wh} Wh");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Unique temp path per test: the suite runs tests in parallel, so a shared
+    /// file name would make them clobber each other's state.
+    fn temp_state_path(tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("daly-bms-{tag}.json"));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn read_state(path: &Path) -> CoulombState {
+        let bytes = std::fs::read(path).expect("state file exists");
+        serde_json::from_slice(&bytes).expect("state file parses")
+    }
+
+    /// The four persisted totals of one device, in `CoulombEntry` field order.
+    fn counters(m: &Metrics, sn: &str) -> [f64; 4] {
+        [
+            m.charge_amp_hours.with_label_values(&[sn]).get(),
+            m.discharge_amp_hours.with_label_values(&[sn]).get(),
+            m.charge_watt_hours.with_label_values(&[sn]).get(),
+            m.discharge_watt_hours.with_label_values(&[sn]).get(),
+        ]
+    }
+
+    fn persisted(state: &CoulombState, sn: &str) -> [f64; 4] {
+        let e = &state.devices[sn];
+        [e.charge_ah, e.discharge_ah, e.charge_wh, e.discharge_wh]
+    }
+
+    /// Extract the value of an exact `metric{labels}` line from a render.
+    fn metric_value(body: &str, series: &str) -> Option<f64> {
+        body.lines()
+            .find_map(|l| l.strip_prefix(series)?.trim().parse().ok())
+    }
+
+    #[test]
+    fn persisted_state_never_below_exported_counters() {
+        // The production regression: the state file fell one frame behind the
+        // counters, so the restored counter was lower than what /metrics had
+        // served and Prometheus read it as a reset.
+        let path = temp_state_path("never-below");
+        let m = Metrics::new(MetricsOptions {
+            coulomb_state_path: Some(path.clone()),
+            state_min_interval: Duration::ZERO,
+            ..Default::default()
+        });
+        // A current near zero is what made the production delta ~4e-12.
+        for i in 0..50 {
+            m.accumulate_coulombs(
+                "SN1",
+                Some(0.01),
+                Some(26.0),
+                1_000.0 + f64::from(i) * 200.0,
+            );
+            if !path.exists() {
+                // The first frame only sets the baseline, producing no delta and
+                // therefore no write: idle frames must not cost an fsync.
+                continue;
+            }
+            let file = persisted(&read_state(&path), "SN1");
+            let exported = counters(&m, "SN1");
+            for (f, e) in file.iter().zip(exported.iter()) {
+                assert!(f >= e, "file {f} < exported {e} after frame {i}");
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn restart_never_decreases_counters() {
+        let path = temp_state_path("restart-monotonic");
+        let before = {
+            let m = Metrics::new(MetricsOptions {
+                coulomb_state_path: Some(path.clone()),
+                state_min_interval: Duration::ZERO,
+                ..Default::default()
+            });
+            for i in 0..10 {
+                m.accumulate_coulombs("SN1", Some(-3.0), Some(26.5), 1_000.0 + f64::from(i) * 60.0);
+            }
+            m.persist_coulombs();
+            counters(&m, "SN1")
+        };
+
+        let m2 = Metrics::new(MetricsOptions {
+            coulomb_state_path: Some(path.clone()),
+            ..Default::default()
+        });
+        m2.restore_coulombs();
+        let after = counters(&m2, "SN1");
+        for (a, b) in after.iter().zip(before.iter()) {
+            assert!(a >= b, "counter decreased across restart: {a} < {b}");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_failure_freezes_counters_and_recovers() {
+        // Point the state path *inside* a regular file, so create_dir_all fails.
+        // No root and no side effects needed to exercise the error branch.
+        let blocker = temp_state_path("write-failure-blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let m = Metrics::new(MetricsOptions {
+            coulomb_state_path: Some(blocker.join("coulombs.json")),
+            state_min_interval: Duration::ZERO,
+            ..Default::default()
+        });
+
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 900.0);
+        assert_eq!(
+            counters(&m, "SN1"),
+            [0.0; 4],
+            "counters advanced despite a failed write"
         );
+        let body = m.render().1;
         assert!(
-            body.contains("daly_bms_charge_watt_hours_total{sn=\"SN1\"} 65"),
-            "restored body: {body}"
+            body.contains("daly_bms_state_write_errors_total{stage=\"create_dir\"}"),
+            "no write error reported: {body}"
         );
+
+        // The deltas are queued, not lost: once writes succeed they all land.
+        let good = temp_state_path("write-failure-recovered");
+        let recovered = Metrics::new(MetricsOptions {
+            coulomb_state_path: Some(good.clone()),
+            state_min_interval: Duration::ZERO,
+            ..Default::default()
+        });
+        recovered.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
+        recovered.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 900.0);
+        assert!(
+            (counters(&recovered, "SN1")[0] - 2.5).abs() < 1e-9,
+            "expected the same 2.5 Ah the failing instance withheld"
+        );
+
+        let _ = std::fs::remove_file(&blocker);
+        let _ = std::fs::remove_file(&good);
+    }
+
+    #[test]
+    fn pending_is_not_exported_until_written() {
+        // Without persistence there is nothing to wait for, so increments must
+        // still reach the counters immediately.
+        let m = Metrics::new(MetricsOptions::default());
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 900.0);
+        assert!((counters(&m, "SN1")[0] - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn throttled_increments_are_deferred_not_lost() {
+        let path = temp_state_path("throttled");
+        let m = Metrics::new(MetricsOptions {
+            coulomb_state_path: Some(path.clone()),
+            state_min_interval: Duration::from_secs(3600),
+            ..Default::default()
+        });
+        // First pending delta writes (no previous write to throttle against).
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 900.0);
+        let after_first = counters(&m, "SN1")[0];
+        assert!((after_first - 2.5).abs() < 1e-9);
+
+        // Everything after that is inside the window and stays pending.
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 1_800.0);
+        assert_eq!(
+            counters(&m, "SN1")[0],
+            after_first,
+            "throttled delta was exported before it was written"
+        );
+
+        // A forced flush (shutdown) applies it.
+        m.persist_coulombs();
+        assert!(
+            (counters(&m, "SN1")[0] - 5.0).abs() < 1e-9,
+            "throttled delta was lost instead of deferred"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn persist_coulombs_is_idempotent() {
+        let path = temp_state_path("persist-idempotent");
+        let m = Metrics::new(MetricsOptions {
+            coulomb_state_path: Some(path.clone()),
+            state_min_interval: Duration::from_secs(3600),
+            ..Default::default()
+        });
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 900.0);
+        m.persist_coulombs();
+        let once = counters(&m, "SN1");
+        m.persist_coulombs();
+        assert_eq!(counters(&m, "SN1"), once, "second persist double-counted");
         let _ = std::fs::remove_file(&path);
     }
 

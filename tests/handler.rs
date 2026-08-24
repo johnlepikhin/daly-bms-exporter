@@ -29,13 +29,24 @@ fn build_frame(regs: &[u16]) -> String {
 }
 
 /// A 126-register realtime block with a couple of known values.
-fn realtime_frame() -> String {
+///
+/// `current_raw` must be set explicitly: the encoding is `(raw - 30000) * 0.1`,
+/// so leaving the register at zero would mean -3000 A — a value the
+/// plausibility gate rejects, which would make current-related assertions pass
+/// or fail for the wrong reason.
+fn realtime_frame_with_current(current_raw: u16) -> String {
     let mut regs = vec![0u16; 126];
     regs[0] = 2195; // cell 1 = 2.195 V
     regs[0x28] = 0x010D; // pack voltage -> 26.9 V
+    regs[0x29] = current_raw;
     regs[0x2A] = 0x034A; // SOC -> 84.2 %
     regs[0x31] = 1; // cell count
     build_frame(&regs)
+}
+
+/// The same block at a steady 10 A charge (raw 30100).
+fn realtime_frame() -> String {
+    realtime_frame_with_current(30_100)
 }
 
 fn app(config: Config) -> axum::Router {
@@ -138,6 +149,50 @@ async fn rejected_serial_creates_no_series() {
     let metrics = scrape(&app).await;
     assert!(!metrics.contains("sn=\"INTRUDER\""));
     assert!(metrics.contains("daly_bms_frames_dropped_total{reason=\"serial_rejected\"}"));
+}
+
+#[tokio::test]
+async fn implausible_current_frame_does_not_reach_the_energy_counters() {
+    let app = app(Config::default());
+    // Good, garbage, good. A single garbage frame would prove nothing on its
+    // own: the first frame of a device only sets the integration baseline, so
+    // "no energy accumulated" would hold with the gate switched off too.
+    let frames = [
+        realtime_frame_with_current(30_100), // +10 A
+        realtime_frame_with_current(0xFFFF), // (65535-30000)*0.1 = 3553.5 A
+        realtime_frame_with_current(30_100), // +10 A again
+    ];
+    for f in frames {
+        let body =
+            format!(r#"{{"Sn":"SN1","Data":[{{"Command":"D2030000007ED649","Data":"{f}"}}]}}"#);
+        assert_eq!(
+            post_json(&app, "/api/v2/http2/SaveThingInfo1", body).await,
+            StatusCode::OK
+        );
+    }
+
+    let metrics = scrape(&app).await;
+    assert!(
+        metrics
+            .contains("daly_bms_coulomb_samples_rejected_total{reason=\"implausible_current\"} 1"),
+        "gate did not report the garbage frame: {metrics}"
+    );
+    // The garbage frame is decoded and exported as gauges, so it must not be
+    // counted as a dropped frame as well.
+    assert!(
+        !metrics.contains("daly_bms_frames_dropped_total"),
+        "gate must not inflate frames_dropped: {metrics}"
+    );
+    // The three POSTs happen within milliseconds, so the integrated amount is
+    // negligible — what matters is that 3553 A never entered the integral.
+    let charged: f64 = metrics
+        .lines()
+        .find_map(|l| l.strip_prefix("daly_bms_charge_amp_hours_total{sn=\"SN1\"}"))
+        .map_or(0.0, |v| v.trim().parse().unwrap());
+    assert!(
+        charged < 0.01,
+        "garbage current was integrated: {charged} Ah"
+    );
 }
 
 #[tokio::test]

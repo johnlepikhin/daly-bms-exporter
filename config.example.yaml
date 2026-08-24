@@ -47,3 +47,32 @@ max_devices: 64
 # The systemd unit provides a writable StateDirectory at /var/lib/daly-bms-exporter.
 # Omit to disable persistence.
 coulomb_state_path: "/var/lib/daly-bms-exporter/coulombs.json"
+
+# Minimum interval between durable writes of the state file above (seconds,
+# clamped to 1..=3600). Every accepted frame stages its delta; the delta is
+# applied to the exported counters only once the file containing it has been
+# fsynced, so deltas arriving inside the window are held, not lost. Two reasons
+# this is not zero: the fsync happens on the same thread that serves /metrics,
+# and the ingest endpoint is unauthenticated, so this is also the rate limit on
+# how often a flood of POSTs can force a disk sync. A SIGKILL loses at most one
+# window's worth, so keep it below the device's post interval (~200 s).
+coulomb_state_min_interval_secs: 5
+
+# Plausibility gate. A frame whose current or pack voltage falls outside these
+# bounds is not integrated at all (it is still decoded and exported as gauges,
+# and counted in daly_bms_coulomb_samples_rejected_total). The wire encoding
+# reaches 3553 A and 6553 V, and the counters are monotonic, so a single corrupt
+# frame would otherwise add kilowatt-hours that can never be removed.
+# Defaults leave ~3x headroom over the observed production peaks (~33 A, 22..29 V
+# on an LTO 24S bank).
+max_plausible_current_amperes: 100.0
+min_plausible_pack_volts: 18.0
+max_plausible_pack_volts: 34.0
+
+# Second line of defence: the most one frame may add to the counters. The gate
+# above bounds the reading and coulomb_max_gap_secs bounds the interval, but
+# their product is still far above anything physical (100 A over 900 s = 25 Ah
+# into a 40 Ah pack). Raise these only if a single frame legitimately carries
+# more than this much throughput.
+max_frame_amp_hours: 5.0
+max_frame_watt_hours: 150.0

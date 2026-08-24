@@ -42,6 +42,22 @@ pub struct Config {
     /// on startup, so charge/discharge totals survive restarts. `None` disables
     /// persistence (counters reset on restart).
     pub coulomb_state_path: Option<PathBuf>,
+    /// Reject a realtime frame whose |pack current| exceeds this many amperes
+    /// before it can reach the coulomb/energy counters. The wire encoding spans
+    /// -3000..+3553 A, so one corrupt frame would otherwise dump kilowatt-hours
+    /// into a monotonic counter, irreversibly. Observed production peak: ~33 A.
+    pub max_plausible_current_amperes: f64,
+    /// Plausible pack-voltage window (volts) for the same gate. The encoding
+    /// spans 0..6553 V; the production bank (LTO 24S) runs at 22..29 V.
+    pub min_plausible_pack_volts: f64,
+    pub max_plausible_pack_volts: f64,
+    /// Second line of defence: cap what a *single* frame may add to the
+    /// counters. The thresholds above only bound the reading, while the
+    /// integration interval is bounded separately by `coulomb_max_gap_secs`, so
+    /// their product still allows an implausibly large delta. Observed
+    /// production peak per frame is far below these.
+    pub max_frame_amp_hours: f64,
+    pub max_frame_watt_hours: f64,
     /// Minimum interval between durable writes of the state file. Increments
     /// arriving inside the window are held in memory and applied to the exported
     /// counters only after the next successful write, so nothing is lost — but a
@@ -62,6 +78,11 @@ impl Default for Config {
             coulomb_max_gap_secs: 900,
             max_devices: 64,
             coulomb_state_path: None,
+            max_plausible_current_amperes: 100.0,
+            min_plausible_pack_volts: 18.0,
+            max_plausible_pack_volts: 34.0,
+            max_frame_amp_hours: 5.0,
+            max_frame_watt_hours: 150.0,
             coulomb_state_min_interval_secs: 5,
         }
     }
@@ -102,6 +123,38 @@ impl Config {
             );
             self.coulomb_state_min_interval_secs = d.coulomb_state_min_interval_secs;
         }
+        if self.max_plausible_current_amperes <= 0.0 {
+            tracing::warn!(
+                value = self.max_plausible_current_amperes,
+                "max_plausible_current_amperes must be positive; using the default"
+            );
+            self.max_plausible_current_amperes = d.max_plausible_current_amperes;
+        }
+        // An inverted window would reject every frame and silently switch off
+        // energy accounting altogether, so fall back rather than honour it.
+        if self.min_plausible_pack_volts >= self.max_plausible_pack_volts {
+            tracing::warn!(
+                min = self.min_plausible_pack_volts,
+                max = self.max_plausible_pack_volts,
+                "plausible pack-voltage window is inverted; using the defaults"
+            );
+            self.min_plausible_pack_volts = d.min_plausible_pack_volts;
+            self.max_plausible_pack_volts = d.max_plausible_pack_volts;
+        }
+        if self.max_frame_amp_hours <= 0.0 {
+            tracing::warn!(
+                value = self.max_frame_amp_hours,
+                "max_frame_amp_hours must be positive; using the default"
+            );
+            self.max_frame_amp_hours = d.max_frame_amp_hours;
+        }
+        if self.max_frame_watt_hours <= 0.0 {
+            tracing::warn!(
+                value = self.max_frame_watt_hours,
+                "max_frame_watt_hours must be positive; using the default"
+            );
+            self.max_frame_watt_hours = d.max_frame_watt_hours;
+        }
     }
 
     /// Whether a device-supplied serial should be accepted as a metric label.
@@ -129,6 +182,10 @@ impl From<&Config> for crate::metrics::MetricsOptions {
             max_devices: c.max_devices,
             coulomb_state_path: c.coulomb_state_path.clone(),
             state_min_interval: std::time::Duration::from_secs(c.coulomb_state_min_interval_secs),
+            max_plausible_current_amperes: c.max_plausible_current_amperes,
+            plausible_pack_volts: (c.min_plausible_pack_volts, c.max_plausible_pack_volts),
+            max_frame_amp_hours: c.max_frame_amp_hours,
+            max_frame_watt_hours: c.max_frame_watt_hours,
         }
     }
 }
@@ -158,6 +215,44 @@ mod tests {
         assert_eq!(cfg.log_level, "debug");
         // Untouched fields keep their defaults.
         assert_eq!(cfg.max_body_bytes, 64 * 1024);
+    }
+
+    #[test]
+    fn plausibility_defaults_bracket_production_values() {
+        let c = Config::default();
+        // Observed production: |I| up to ~33 A, pack 22..29 V (LTO 24S).
+        assert!(33.0 < c.max_plausible_current_amperes);
+        assert!(c.min_plausible_pack_volts < 22.0 && 29.0 < c.max_plausible_pack_volts);
+        // ...while the extremes of the wire encoding are rejected.
+        assert!(3553.5 > c.max_plausible_current_amperes);
+        assert!(6553.5 > c.max_plausible_pack_volts);
+    }
+
+    #[test]
+    fn out_of_range_knobs_fall_back_to_defaults() {
+        let d = Config::default();
+        let mut cfg: Config = serde_norway::from_str(
+            "coulomb_state_min_interval_secs: 0\n\
+             min_plausible_pack_volts: 40.0\n\
+             max_plausible_pack_volts: 10.0\n\
+             max_plausible_current_amperes: -5.0\n\
+             max_frame_amp_hours: 0.0\n",
+        )
+        .unwrap();
+        cfg.clamp_to_sane_ranges();
+        // 0 would remove the only rate limit on fsyncs from unauthenticated input.
+        assert_eq!(
+            cfg.coulomb_state_min_interval_secs,
+            d.coulomb_state_min_interval_secs
+        );
+        // An inverted window would reject every frame and stop all accounting.
+        assert_eq!(cfg.min_plausible_pack_volts, d.min_plausible_pack_volts);
+        assert_eq!(cfg.max_plausible_pack_volts, d.max_plausible_pack_volts);
+        assert_eq!(
+            cfg.max_plausible_current_amperes,
+            d.max_plausible_current_amperes
+        );
+        assert_eq!(cfg.max_frame_amp_hours, d.max_frame_amp_hours);
     }
 
     #[test]

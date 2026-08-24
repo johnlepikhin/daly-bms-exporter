@@ -48,6 +48,30 @@ struct Split {
     discharge: f64,
 }
 
+/// A [`Split`] after per-frame clamping, with a flag so the caller can report
+/// that a clamp actually fired.
+struct Clamped {
+    value: Split,
+    was_clamped: bool,
+}
+
+impl Split {
+    /// Cap each direction at `max`. The plausibility thresholds bound the
+    /// *reading* and `coulomb_max_gap_secs` bounds the *interval*, but their
+    /// product is still far above anything physical, so the delta itself needs
+    /// its own ceiling before it reaches a monotonic counter.
+    fn clamped(self, max: f64) -> Clamped {
+        let value = Split {
+            charge: self.charge.min(max),
+            discharge: self.discharge.min(max),
+        };
+        Clamped {
+            was_clamped: value != self,
+            value,
+        }
+    }
+}
+
 impl std::ops::AddAssign for Split {
     fn add_assign(&mut self, rhs: Self) {
         self.charge += rhs.charge;
@@ -191,6 +215,13 @@ pub struct Metrics {
     coulomb_state_path: Option<PathBuf>,
     /// Minimum interval between durable state writes.
     state_min_interval: Duration,
+    /// Plausibility gate thresholds; see [`MetricsOptions`].
+    max_plausible_current_amperes: f64,
+    plausible_pack_volts: (f64, f64),
+    max_frame_amp_hours: f64,
+    max_frame_watt_hours: f64,
+    /// Realtime samples rejected before integration, by reason.
+    coulomb_samples_rejected: IntCounterVec, // {reason}
     seen: Mutex<CoulombGuard>,
 }
 
@@ -207,6 +238,13 @@ pub struct MetricsOptions {
     /// Minimum interval between durable writes of the state file. Deltas
     /// arriving inside the window are held in memory, not lost.
     pub state_min_interval: Duration,
+    /// Plausibility gate: reject a frame whose |current| exceeds this (amperes).
+    pub max_plausible_current_amperes: f64,
+    /// Plausibility gate: accepted pack-voltage window, `(min, max)` volts.
+    pub plausible_pack_volts: (f64, f64),
+    /// Per-frame cap on what one frame may add to the counters.
+    pub max_frame_amp_hours: f64,
+    pub max_frame_watt_hours: f64,
 }
 
 impl Default for MetricsOptions {
@@ -216,6 +254,10 @@ impl Default for MetricsOptions {
             max_devices: 64,
             coulomb_state_path: None,
             state_min_interval: Duration::from_secs(5),
+            max_plausible_current_amperes: 100.0,
+            plausible_pack_volts: (18.0, 34.0),
+            max_frame_amp_hours: 5.0,
+            max_frame_watt_hours: 150.0,
         }
     }
 }
@@ -272,6 +314,10 @@ impl Metrics {
             max_devices,
             coulomb_state_path,
             state_min_interval,
+            max_plausible_current_amperes,
+            plausible_pack_volts,
+            max_frame_amp_hours,
+            max_frame_watt_hours,
         } = opts;
         let r = Registry::new();
         Self {
@@ -516,6 +562,12 @@ impl Metrics {
                 "Unix time of the last accepted frame",
                 &["sn"],
             ),
+            coulomb_samples_rejected: register_int_counter_vec(
+                &r,
+                "daly_bms_coulomb_samples_rejected_total",
+                "Realtime samples rejected before coulomb/energy integration",
+                &["reason"],
+            ),
             state_write_errors: register_int_counter_vec(
                 &r,
                 "daly_bms_state_write_errors_total",
@@ -555,6 +607,10 @@ impl Metrics {
             max_devices,
             coulomb_state_path,
             state_min_interval,
+            max_plausible_current_amperes,
+            plausible_pack_volts,
+            max_frame_amp_hours,
+            max_frame_watt_hours,
             registry: r,
             seen: Mutex::new(CoulombGuard::default()),
         }
@@ -732,6 +788,23 @@ impl Metrics {
         now_secs: f64,
     ) {
         let Some(cur) = current_a else { return };
+        // Plausibility gate. The input is unauthenticated and the register
+        // encoding reaches 3553 A / 6553 V, so without this one corrupt frame
+        // dumps kilowatt-hours into a counter that can never be walked back.
+        // A frame is rejected whole: a garbage voltage register is evidence the
+        // frame is garbage, not just that one field.
+        if !cur.is_finite() || cur.abs() > self.max_plausible_current_amperes {
+            self.record_sample_rejected("implausible_current");
+            return;
+        }
+        let (min_v, max_v) = self.plausible_pack_volts;
+        // `None` is legal here: a frame without pack voltage still counts
+        // amp-hours, it just cannot contribute energy.
+        if pack_v.is_some_and(|v| !v.is_finite() || v < min_v || v > max_v) {
+            self.record_sample_rejected("implausible_voltage");
+            return;
+        }
+        let mut clamped = false;
         {
             let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
             if !seen.devices.contains_key(sn) {
@@ -746,16 +819,24 @@ impl Metrics {
             // Ah from current, and Wh from power when both endpoint voltages are known.
             if let (Some(last_ts), Some(last_cur)) = (entry.last_coulomb_ts, entry.last_current) {
                 let dt = now_secs - last_ts;
-                entry.pending_ah += trapezoid_hours(last_cur, cur, dt, gap);
+                let ah = trapezoid_hours(last_cur, cur, dt, gap).clamped(self.max_frame_amp_hours);
+                entry.pending_ah += ah.value;
+                clamped |= ah.was_clamped;
                 if let (Some(last_pv), Some(pv)) = (entry.last_pack_v, pack_v) {
                     // Power = V*I; trapezoid of power over the interval → watt-hours.
-                    entry.pending_wh += trapezoid_hours(last_cur * last_pv, cur * pv, dt, gap);
+                    let wh = trapezoid_hours(last_cur * last_pv, cur * pv, dt, gap)
+                        .clamped(self.max_frame_watt_hours);
+                    entry.pending_wh += wh.value;
+                    clamped |= wh.was_clamped;
                 }
             }
             entry.last_coulomb_ts = Some(now_secs);
             entry.last_current = Some(cur);
             // Only updated on frames that carry current (early return on None above).
             entry.last_pack_v = pack_v;
+        }
+        if clamped {
+            self.record_sample_rejected("clamped_delta");
         }
         self.flush_coulomb_state(false);
     }
@@ -970,6 +1051,18 @@ impl Metrics {
     /// Count a successfully decoded frame by block.
     pub fn record_decoded(&self, block: &str) {
         self.frames_decoded.with_label_values(&[block]).inc();
+    }
+
+    /// Count a realtime sample rejected before integration.
+    ///
+    /// Deliberately *not* `frames_dropped`: that family means "the frame never
+    /// reached any metric", while these frames are decoded, exported as gauges
+    /// and counted in `frames_decoded`. Reusing it would make the drop ratio
+    /// panels double-count the same frame.
+    pub fn record_sample_rejected(&self, reason: &str) {
+        self.coulomb_samples_rejected
+            .with_label_values(&[reason])
+            .inc();
     }
 
     /// Count a dropped frame by reason.
@@ -1530,6 +1623,78 @@ mod tests {
         m.persist_coulombs();
         assert_eq!(counters(&m, "SN1"), once, "second persist double-counted");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn implausible_current_frame_is_rejected() {
+        let m = Metrics::new(MetricsOptions::default());
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
+        // 3553 A is the top of the wire encoding ((0xFFFF - 30000) * 0.1).
+        m.accumulate_coulombs("SN1", Some(3553.5), Some(26.0), 1_000.0 + 900.0);
+        assert_eq!(
+            counters(&m, "SN1"),
+            [0.0; 4],
+            "garbage frame was integrated"
+        );
+        let body = m.render().1;
+        assert!(
+            body.contains(
+                "daly_bms_coulomb_samples_rejected_total{reason=\"implausible_current\"} 1"
+            ),
+            "not reported: {body}"
+        );
+        // The frame is decoded and exported as gauges, so it must not also be
+        // counted as a dropped frame.
+        assert!(
+            !body.contains("daly_bms_frames_dropped_total"),
+            "gate must not inflate frames_dropped: {body}"
+        );
+    }
+
+    #[test]
+    fn implausible_voltage_frame_is_rejected() {
+        let m = Metrics::new(MetricsOptions::default());
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
+        // Valid current, garbage voltage register (0xFFFF * 0.1) -> whole frame.
+        m.accumulate_coulombs("SN1", Some(10.0), Some(6553.5), 1_000.0 + 900.0);
+        assert_eq!(counters(&m, "SN1"), [0.0; 4]);
+        assert!(
+            m.render().1.contains(
+                "daly_bms_coulomb_samples_rejected_total{reason=\"implausible_voltage\"}"
+            )
+        );
+    }
+
+    #[test]
+    fn plausible_but_impossible_frame_is_clamped() {
+        // 99 A at 33 V passes the thresholds, but sustained over the 900 s gap
+        // cap it would still be ~24 Ah / 800 Wh into a 40 Ah pack. The per-frame
+        // clamp is what stops that.
+        let m = Metrics::new(MetricsOptions::default());
+        m.accumulate_coulombs("SN1", Some(99.0), Some(33.0), 1_000.0);
+        m.accumulate_coulombs("SN1", Some(99.0), Some(33.0), 1_000.0 + 900.0);
+        let [ah, _, wh, _] = counters(&m, "SN1");
+        assert!((ah - 5.0).abs() < 1e-9, "amp-hours not clamped: {ah}");
+        assert!((wh - 150.0).abs() < 1e-9, "watt-hours not clamped: {wh}");
+        assert!(
+            m.render()
+                .1
+                .contains("daly_bms_coulomb_samples_rejected_total{reason=\"clamped_delta\"}")
+        );
+    }
+
+    #[test]
+    fn implausible_frame_keeps_baseline() {
+        // A rejected frame must not move the baseline: the next good frame then
+        // integrates cleanly across the whole interval instead of losing it.
+        let m = Metrics::new(MetricsOptions::default());
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
+        m.accumulate_coulombs("SN1", Some(3553.5), Some(26.0), 1_000.0 + 200.0);
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 400.0);
+        let [ah, _, wh, _] = counters(&m, "SN1");
+        // 10 A over the full 400 s, and 10*26 W over the same.
+        assert!((ah - 10.0 * 400.0 / 3600.0).abs() < 1e-9, "got {ah} Ah");
+        assert!((wh - 260.0 * 400.0 / 3600.0).abs() < 1e-9, "got {wh} Wh");
     }
 
     #[test]

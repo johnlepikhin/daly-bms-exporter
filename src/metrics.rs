@@ -3,12 +3,12 @@
 //! pruned when a device reports fewer cells so stale readings don't linger.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use prometheus::{
-    CounterVec, Encoder, GaugeVec, IntCounterVec, IntGaugeVec, Opts, Registry, TextEncoder,
+    CounterVec, Encoder, Gauge, GaugeVec, IntCounterVec, IntGaugeVec, Opts, Registry, TextEncoder,
 };
 use serde::{Deserialize, Serialize};
 
@@ -150,6 +150,11 @@ pub struct Metrics {
     frames_decoded: IntCounterVec,  // {block}
     frames_dropped: IntCounterVec,  // {reason}
     last_frame_timestamp: GaugeVec, // {sn}
+    /// Failed durable writes of the coulomb state file, by stage.
+    state_write_errors: IntCounterVec, // {stage}
+    /// Unix time of the last successful coulomb-state write. Exported so a
+    /// stalled accounting loop is detectable even when nothing errors.
+    state_last_write_timestamp: Gauge,
 
     /// Integration-interval cap for the coulomb counter (seconds).
     coulomb_max_gap_secs: f64,
@@ -185,6 +190,12 @@ impl Default for MetricsOptions {
 /// Register a `GaugeVec` on the registry (name collisions are a startup bug).
 fn register_gauge_vec(reg: &Registry, name: &str, help: &str, labels: &[&str]) -> GaugeVec {
     let m = GaugeVec::new(Opts::new(name, help), labels).expect("valid metric");
+    reg.register(Box::new(m.clone())).expect("unique metric");
+    m
+}
+
+fn register_gauge(reg: &Registry, name: &str, help: &str) -> Gauge {
+    let m = Gauge::with_opts(Opts::new(name, help)).expect("valid metric");
     reg.register(Box::new(m.clone())).expect("unique metric");
     m
 }
@@ -471,6 +482,17 @@ impl Metrics {
                 "Unix time of the last accepted frame",
                 &["sn"],
             ),
+            state_write_errors: register_int_counter_vec(
+                &r,
+                "daly_bms_state_write_errors_total",
+                "Failed durable writes of the coulomb/energy state file",
+                &["stage"],
+            ),
+            state_last_write_timestamp: register_gauge(
+                &r,
+                "daly_bms_state_last_write_timestamp_seconds",
+                "Unix time of the last successful coulomb/energy state write",
+            ),
             charge_amp_hours: register_counter_vec(
                 &r,
                 "daly_bms_charge_amp_hours_total",
@@ -753,7 +775,7 @@ impl Metrics {
         self.write_coulomb_state(&seen);
     }
 
-    /// Atomically write the coulomb totals of all tracked devices to
+    /// Durably write the coulomb totals of all tracked devices to
     /// `coulomb_state_path`. Must be called while holding the `seen` lock.
     fn write_coulomb_state(&self, seen: &HashMap<String, LastSeries>) {
         let Some(path) = &self.coulomb_state_path else {
@@ -771,17 +793,39 @@ impl Metrics {
                 },
             );
         }
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        let bytes = match serde_json::to_vec(&state) {
+            Ok(b) => b,
+            Err(e) => {
+                self.record_write_error(WriteStage::Serialize, &std::io::Error::other(e), path);
+                return;
+            }
+        };
+        match write_file_durable(path, &bytes) {
+            Ok(()) => self.state_last_write_timestamp.set(now_unix_secs()),
+            // The rename is already committed, so the state file is up to date;
+            // report the failed directory fsync but treat the write as done,
+            // otherwise a filesystem that cannot fsync directories would freeze
+            // energy accounting forever.
+            Err((stage @ WriteStage::DirSync, e)) => {
+                self.record_write_error(stage, &e, path);
+                self.state_last_write_timestamp.set(now_unix_secs());
+            }
+            Err((stage, e)) => self.record_write_error(stage, &e, path),
         }
-        let tmp = path.with_extension("tmp");
-        let write = serde_json::to_vec(&state)
-            .map_err(std::io::Error::other)
-            .and_then(|bytes| std::fs::write(&tmp, bytes))
-            .and_then(|()| std::fs::rename(&tmp, path));
-        if let Err(e) = write {
-            tracing::warn!(error = %e, path = %path.display(), "cannot persist coulomb state");
-        }
+    }
+
+    /// Count a failed state write and log it. Kept separate so every failure
+    /// path reports the same way.
+    fn record_write_error(&self, stage: WriteStage, e: &std::io::Error, path: &Path) {
+        self.state_write_errors
+            .with_label_values(&[stage.as_str()])
+            .inc();
+        tracing::warn!(
+            error = %e,
+            stage = stage.as_str(),
+            path = %path.display(),
+            "cannot persist coulomb state"
+        );
     }
 
     /// Record the outcome of an HTTP request (endpoint, status).
@@ -852,6 +896,84 @@ fn trapezoid_hours(prev: f64, cur: f64, dt_secs: f64, max_gap: f64) -> Split {
             discharge: -value,
         }
     }
+}
+
+/// Stage of a durable write, used as the `stage` label of
+/// `daly_bms_state_write_errors_total`. `io::Result` alone would lose which step
+/// failed, and "the rename failed" needs a very different response from
+/// "the directory fsync is unsupported".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteStage {
+    Serialize,
+    CreateDir,
+    Create,
+    Write,
+    Sync,
+    Rename,
+    DirSync,
+}
+
+impl WriteStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Serialize => "serialize",
+            Self::CreateDir => "create_dir",
+            Self::Create => "create",
+            Self::Write => "write",
+            Self::Sync => "sync",
+            Self::Rename => "rename",
+            Self::DirSync => "dirsync",
+        }
+    }
+}
+
+/// Durably replace `path` with `bytes`: create the parent directory, write a
+/// temp file, fsync it, rename it into place, then fsync the parent directory.
+///
+/// Both fsyncs matter. Without the file fsync the rename can be committed while
+/// the payload is still in page cache; without the directory fsync the rename
+/// itself is only guaranteed by ext4's `data=ordered` until the next journal
+/// commit (and on other filesystems, not at all). That is exactly the window a
+/// hard reboot of the router hits — and a state file that rolls back even one
+/// frame makes the restored counter lower than what /metrics already served,
+/// which Prometheus reads as a counter reset.
+///
+/// A failed directory fsync is reported by the caller but does not fail the
+/// write: some filesystems reject fsync on a directory outright.
+fn write_file_durable(path: &Path, bytes: &[u8]) -> Result<(), (WriteStage, std::io::Error)> {
+    use std::io::Write as _;
+
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    if let Some(dir) = parent {
+        std::fs::create_dir_all(dir).map_err(|e| (WriteStage::CreateDir, e))?;
+    }
+
+    let tmp = path.with_extension("tmp");
+    let write = (|| {
+        let mut f = std::fs::File::create(&tmp).map_err(|e| (WriteStage::Create, e))?;
+        f.write_all(bytes).map_err(|e| (WriteStage::Write, e))?;
+        f.sync_all().map_err(|e| (WriteStage::Sync, e))?;
+        drop(f);
+        std::fs::rename(&tmp, path).map_err(|e| (WriteStage::Rename, e))
+    })();
+    if write.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return write;
+    }
+
+    // The rename is committed; a directory-fsync failure is worth reporting but
+    // must not make the caller withhold the increment, or a filesystem that
+    // cannot fsync directories would freeze energy accounting forever.
+    if let Some(dir) = parent
+        && let Err(e) = std::fs::File::open(dir).and_then(|d| d.sync_all())
+        && !matches!(
+            e.kind(),
+            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::Unsupported
+        )
+    {
+        return Err((WriteStage::DirSync, e));
+    }
+    Ok(())
 }
 
 /// Add a [`Split`] (from [`trapezoid_hours`]) onto a pair of direction counters
@@ -1041,6 +1163,40 @@ mod tests {
             "restored body: {body}"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_file_durable_replaces_atomically() {
+        let dir = std::env::temp_dir().join("daly-bms-durable-write-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        // The parent directory does not exist yet: the write must create it.
+        let path = dir.join("state.json");
+
+        write_file_durable(&path, b"first").expect("first write");
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+
+        write_file_durable(&path, b"second").expect("overwrite");
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        assert!(
+            !path.with_extension("tmp").exists(),
+            "temp file left behind after a successful write"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_file_durable_reports_the_failing_stage() {
+        // Parent path component is a regular file, so create_dir_all fails. This
+        // needs no root and leaves nothing behind but the temp file itself.
+        let blocker = std::env::temp_dir().join("daly-bms-durable-write-blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+
+        let err = write_file_durable(&blocker.join("state.json"), b"x")
+            .expect_err("writing under a regular file must fail");
+        assert_eq!(err.0, WriteStage::CreateDir);
+
+        let _ = std::fs::remove_file(&blocker);
     }
 
     #[test]

@@ -78,7 +78,19 @@ make grafana REMOTE=<host>        # установка Grafana-дашборда 
 Конфиг — YAML через **`serde_norway`** (поддерживаемый форк архивного
 `serde_yaml`); поля: `listen`, `metrics_path`, `log_level`, `allowed_serials`,
 `max_body_bytes`, `request_timeout_secs`, `coulomb_max_gap_secs`, `max_devices`,
-`coulomb_state_path` (см. `config.example.yaml`).
+`coulomb_state_path`, `coulomb_state_min_interval_secs`,
+`max_plausible_current_amperes`, `min/max_plausible_pack_volts`,
+`max_frame_amp_hours`, `max_frame_watt_hours` (см. `config.example.yaml`).
+
+**Инвариант счётчиков энергии (не ломать):** значение в state-файле всегда ≥
+уже отданного в `/metrics`. Prometheus трактует любое уменьшение counter'а как
+reset и добавляет весь накопленный total в `increase()` — на проде это дало
+фантомный столбик +20 кВт·ч. Держат инвариант три вещи: feature
+`float_roundtrip` у `serde_json` (без неё парсер теряет 1 ULP примерно на 12%
+значений — это и была первопричина), запись state-файла до инкремента counter'а
+(`Metrics::flush_coulomb_state`) и `bump_ulp`. Запись — durable (fsync tmp +
+fsync каталога) и выполняется **вне** мьютекса: рантайм однопоточный, и fsync
+под локом вешает в том числе `/metrics`.
 
 Пакетирование: `packaging/daly-bms-exporter.service` — systemd-unit (DynamicUser +
 `CAP_NET_BIND_SERVICE` + `StateDirectory=daly-bms-exporter` для persistence

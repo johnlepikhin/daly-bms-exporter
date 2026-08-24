@@ -46,13 +46,25 @@ deb: cross-build
 deploy:
 	scripts/deploy.sh $(REMOTE)
 
-# Provision the Grafana dashboard (validate JSON, scp provider+dashboard, restart
-# grafana-server). Grafana then reloads the dashboard file every 30s without restart.
+# Provision every Grafana dashboard in grafana/dashboards (validate JSON, scp
+# provider + dashboards, restart grafana-server). Grafana then reloads the files
+# every 30s without a restart.
+#
+# The loop matters: this target used to name daly-bms.json explicitly, so
+# daly-bms-bank.json — where most of the bank-total energy panels live — was
+# never deployed from the repo at all.
 grafana:
-	jq -e . grafana/dashboards/daly-bms.json >/dev/null
+	for f in grafana/dashboards/*.json; do jq -e . "$$f" >/dev/null || exit 1; done
 	ssh -o LogLevel=ERROR $(REMOTE) 'install -d -o grafana -g grafana /var/lib/grafana/dashboards'
 	scp -o LogLevel=ERROR grafana/provisioning/daly-bms.yaml $(REMOTE):/etc/grafana/provisioning/dashboards/daly-bms.yaml
-	scp -o LogLevel=ERROR grafana/dashboards/daly-bms.json $(REMOTE):/var/lib/grafana/dashboards/daly-bms.json
-	ssh -o LogLevel=ERROR $(REMOTE) 'chown grafana:grafana /var/lib/grafana/dashboards/daly-bms.json && chmod 0644 /var/lib/grafana/dashboards/daly-bms.json && systemctl restart grafana-server && sleep 3 && systemctl is-active grafana-server'
+	scp -o LogLevel=ERROR grafana/dashboards/*.json $(REMOTE):/var/lib/grafana/dashboards/
+	ssh -o LogLevel=ERROR $(REMOTE) 'chown grafana:grafana /var/lib/grafana/dashboards/*.json && chmod 0644 /var/lib/grafana/dashboards/*.json && systemctl restart grafana-server && sleep 3 && systemctl is-active grafana-server'
 
-.PHONY: all clean debug-build fastdev-build release-build cross-image cross-build deb deploy grafana
+# Sync the Prometheus alert rules to the host and reload Prometheus. The repo
+# copy is the source of truth (see the header of doc/ratzek-bms.rules); nothing
+# else deploys this file.
+rules:
+	scp -o LogLevel=ERROR doc/ratzek-bms.rules $(REMOTE):/etc/prometheus/rules/ratzek-bms.rules
+	ssh -o LogLevel=ERROR $(REMOTE) 'promtool check rules /etc/prometheus/rules/ratzek-bms.rules && systemctl reload prometheus'
+
+.PHONY: all clean debug-build fastdev-build release-build cross-image cross-build deb deploy grafana rules

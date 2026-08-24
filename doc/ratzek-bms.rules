@@ -50,6 +50,46 @@ groups:
         annotations:
           summary: "Разбаланс ячеек АКБ [{{ $labels.battery }}]: разброс {{ $value | humanize }} В (слабая/деградирующая ячейка)"
 
+      # --- Energy-accounting health (added after the 2026-08-22 phantom spike) ---
+
+      - alert: RatzekBMSEnergyCounterReset
+        # The one alert that must not be dropped: the dashboards now clamp
+        # per-window increments, so a counter reset no longer shows up as a
+        # 20 kWh bar — it is invisible on the graphs. resets() sees the decrease
+        # itself, down to the single ULP that caused the original incident.
+        expr: resets(daly_bms_charge_watt_hours_total[1h]) + resets(daly_bms_discharge_watt_hours_total[1h]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Счётчик энергии BMS [{{ $labels.battery }}] уехал вниз — Prometheus засчитает reset и нарисует фантомный скачок"
+
+      - alert: RatzekBMSEnergyAccountingStalled
+        # Counters advance only after the state file is durably written, so a
+        # broken write freezes energy accounting silently: flat graphs, no error
+        # anywhere else. Guarded by frames_decoded so a genuinely offline device
+        # does not fire this instead of RatzekBMSCommsLost.
+        expr: time() - daly_bms_state_last_write_timestamp_seconds > 900 and rate(daly_bms_frames_decoded_total[15m]) > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Учёт энергии встал: state-файл не пишется {{ $value | humanize }}с (проверь место на диске и права на /var/lib/daly-bms-exporter)"
+
+      - alert: RatzekBMSStateWriteFailing
+        expr: increase(daly_bms_state_write_errors_total[15m]) > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Не пишется state-файл экспортёра (стадия {{ $labels.stage }}) — счётчики энергии заморожены"
+
+      - alert: RatzekBMSImplausibleSamples
+        # Either the device/transport is producing garbage, or the plausibility
+        # thresholds are too tight. Both are worth looking at; reason= says which.
+        expr: increase(daly_bms_coulomb_samples_rejected_total[1h]) > 0
+        for: 15m
+        labels: { severity: info }
+        annotations:
+          summary: "Кадры BMS не проходят проверку правдоподобности ({{ $labels.reason }}) — мусор от устройства или слишком узкие пороги"
+
       # --- Intentionally DISABLED (do not re-enable without reason) ---
       # RatzekBatterySOCCritical / RatzekBatterySOCLow: BMS SOC is unreliable on this
       #   controller; empty-battery is caught by RatzekBatteryVoltageLow (measured).

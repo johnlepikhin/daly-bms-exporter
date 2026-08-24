@@ -59,6 +59,20 @@ seconds), and `max_devices` (hard cap on distinct tracked serials, to bound
 metric cardinality; `0` = unlimited). A missing file uses defaults
 (`listen: 0.0.0.0:8080`).
 
+The coulomb/energy counters are persisted to `coulomb_state_path`. The write is
+durable (temp file, fsync, rename, directory fsync) and happens *before* the
+increment reaches the exported counter, so the file can never fall behind
+`/metrics`: a counter that comes back lower after a restart is read by Prometheus
+as a reset, which adds the whole accumulated total to `increase()`.
+`coulomb_state_min_interval_secs` (default 5, clamped to `1..=3600`) rate-limits
+those writes; deltas arriving inside the window are held in memory, not dropped.
+
+`max_plausible_current_amperes`, `min_plausible_pack_volts`,
+`max_plausible_pack_volts` and `max_frame_amp_hours` / `max_frame_watt_hours`
+gate what may enter the counters. The register encoding reaches 3553 A and
+6553 V, so without them one corrupt frame would add kilowatt-hours that cannot
+be removed from a monotonic counter.
+
 ## Metrics & dashboard
 
 `/metrics` exposes Prometheus text-format families, all labelled by `sn` (BMS
@@ -76,15 +90,25 @@ serial). Highlights:
 - **Staleness** — `daly_bms_last_frame_timestamp_seconds`.
 - **Self-observability** — `daly_bms_http_requests_total{endpoint,status}`,
   `daly_bms_frames_decoded_total{block}`,
-  `daly_bms_frames_dropped_total{reason}`.
+  `daly_bms_frames_dropped_total{reason}` (frame never reached any metric),
+  `daly_bms_coulomb_samples_rejected_total{reason}` (frame was exported as
+  gauges but kept out of the counters by the plausibility gate),
+  `daly_bms_state_write_errors_total{stage}` and
+  `daly_bms_state_last_write_timestamp_seconds` (energy accounting stalls if the
+  state file cannot be written — alert on the age of this gauge).
 - **Device metadata** —
   `daly_bms_device_info{serial,machine_code,sw_version,hw_version}`.
 
-A ready-made Grafana dashboard lives in `grafana/dashboards/daly-bms.json` (with
-its provider config in `grafana/provisioning/daly-bms.yaml`): a fleet overview,
-per-device repeat rows, and a health section (per-cell imbalance / deviation,
-SOH estimate, C-rate, coulomb energy). Deploy it with
-`make grafana REMOTE=<host>`.
+Ready-made Grafana dashboards live in `grafana/dashboards/` (provider config in
+`grafana/provisioning/daly-bms.yaml`): `daly-bms.json` is the fleet overview with
+per-device repeat rows and a health section (per-cell imbalance / deviation, SOH
+estimate, C-rate, coulomb energy), `daly-bms-bank.json` covers bank totals.
+`make grafana REMOTE=<host>` deploys both.
+
+Energy panels sum *clamped* 20-minute increments rather than calling
+`increase()` over the whole window, so a counter reset cannot spike them —
+including resets already recorded in history. Prometheus alert rules are in
+`doc/ratzek-bms.rules`; `make rules REMOTE=<host>` syncs and reloads them.
 
 ## Redirecting device traffic
 

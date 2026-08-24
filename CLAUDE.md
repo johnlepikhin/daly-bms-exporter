@@ -47,7 +47,8 @@ cargo run                         # запуск бинаря
 cargo deny check                  # аудит зависимостей/лицензий (deny.toml)
 make deb                          # сборка .deb-пакета
 make deploy REMOTE=<host>         # деплой на aarch64-хост (scripts/deploy.sh)
-make grafana REMOTE=<host>        # установка Grafana-дашборда на хост
+make grafana REMOTE=<host>        # установка Grafana-дашбордов на хост
+make rules REMOTE=<host>          # синхронизация Prometheus alert rules
 ```
 
 ## Архитектура и поток данных
@@ -90,7 +91,9 @@ reset и добавляет весь накопленный total в `increase()
 значений — это и была первопричина), запись state-файла до инкремента counter'а
 (`Metrics::flush_coulomb_state`) и `bump_ulp`. Запись — durable (fsync tmp +
 fsync каталога) и выполняется **вне** мьютекса: рантайм однопоточный, и fsync
-под локом вешает в том числе `/metrics`.
+под локом вешает в том числе `/metrics`. Отметка времени записи ставится на
+каждую **попытку**, а не только на успех, иначе сломанный диск заставляет
+фсинкать на каждом кадре (в одном POST их может быть под сотню).
 
 Пакетирование: `packaging/daly-bms-exporter.service` — systemd-unit (DynamicUser +
 `CAP_NET_BIND_SERVICE` + `StateDirectory=daly-bms-exporter` для persistence

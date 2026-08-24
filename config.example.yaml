@@ -49,7 +49,8 @@ max_devices: 64
 coulomb_state_path: "/var/lib/daly-bms-exporter/coulombs.json"
 
 # Minimum interval between durable writes of the state file above (seconds,
-# clamped to 1..=3600). Every accepted frame stages its delta; the delta is
+# outside 1..=3600 falls back to the default of 5). Every accepted frame stages
+# its delta; the delta is
 # applied to the exported counters only once the file containing it has been
 # fsynced, so deltas arriving inside the window are held, not lost. Two reasons
 # this is not zero: the fsync happens on the same thread that serves /metrics,
@@ -69,10 +70,12 @@ max_plausible_current_amperes: 100.0
 min_plausible_pack_volts: 18.0
 max_plausible_pack_volts: 34.0
 
-# Second line of defence: the most one frame may add to the counters. The gate
-# above bounds the reading and coulomb_max_gap_secs bounds the interval, but
-# their product is still far above anything physical (100 A over 900 s = 25 Ah
-# into a 40 Ah pack). Raise these only if a single frame legitimately carries
-# more than this much throughput.
-max_frame_amp_hours: 5.0
-max_frame_watt_hours: 150.0
+# Second line of defence: the most one frame may add to the counters, in case
+# the integration itself misbehaves. The defaults sit just above what the gate
+# and coulomb_max_gap_secs already permit together (100 A sustained for a whole
+# 900 s gap = 25 Ah), because that combination is a real reading after a comms
+# drop rather than an anomaly — clamping it would under-count energy after every
+# outage. Lower them only if the pack physically cannot take that much in one
+# interval; startup warns when they are set below that product.
+max_frame_amp_hours: 25.0
+max_frame_watt_hours: 900.0

@@ -25,12 +25,16 @@ struct Cli {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config = Config::load(&cli.config)?;
+    let mut config = Config::load(&cli.config)?;
 
     // RUST_LOG wins; otherwise fall back to the configured level.
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // Only now can the substitutions be reported; running this inside
+    // `Config::load` would drop every warning on the floor.
+    config.reset_out_of_range_to_defaults();
 
     tracing::debug!(
         config_path = %cli.config.display(),

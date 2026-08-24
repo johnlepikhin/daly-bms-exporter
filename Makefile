@@ -63,8 +63,11 @@ grafana:
 # Sync the Prometheus alert rules to the host and reload Prometheus. The repo
 # copy is the source of truth (see the header of doc/ratzek-bms.rules); nothing
 # else deploys this file.
+# Validate before installing, like the grafana target does: a rules file that
+# fails promtool must never reach /etc/prometheus/rules, or the next restart of
+# Prometheus (for any unrelated reason) takes down all alerting on the host.
 rules:
-	scp -o LogLevel=ERROR doc/ratzek-bms.rules $(REMOTE):/etc/prometheus/rules/ratzek-bms.rules
-	ssh -o LogLevel=ERROR $(REMOTE) 'promtool check rules /etc/prometheus/rules/ratzek-bms.rules && systemctl reload prometheus'
+	scp -o LogLevel=ERROR doc/ratzek-bms.rules $(REMOTE):/tmp/ratzek-bms.rules
+	ssh -o LogLevel=ERROR $(REMOTE) 'promtool check rules /tmp/ratzek-bms.rules && install -m0644 /tmp/ratzek-bms.rules /etc/prometheus/rules/ratzek-bms.rules && rm -f /tmp/ratzek-bms.rules && systemctl reload prometheus'
 
 .PHONY: all clean debug-build fastdev-build release-build cross-image cross-build deb deploy grafana rules

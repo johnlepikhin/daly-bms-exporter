@@ -64,8 +64,9 @@ durable (temp file, fsync, rename, directory fsync) and happens *before* the
 increment reaches the exported counter, so the file can never fall behind
 `/metrics`: a counter that comes back lower after a restart is read by Prometheus
 as a reset, which adds the whole accumulated total to `increase()`.
-`coulomb_state_min_interval_secs` (default 5, clamped to `1..=3600`) rate-limits
-those writes; deltas arriving inside the window are held in memory, not dropped.
+`coulomb_state_min_interval_secs` (default 5; a value outside `1..=3600` falls
+back to the default) rate-limits those writes — on every attempt, not just on
+success, so a failing disk cannot force an fsync per frame; deltas arriving inside the window are held in memory, not dropped.
 
 `max_plausible_current_amperes`, `min_plausible_pack_volts`,
 `max_plausible_pack_volts` and `max_frame_amp_hours` / `max_frame_watt_hours`

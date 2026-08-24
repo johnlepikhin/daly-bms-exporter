@@ -52,10 +52,14 @@ pub struct Config {
     pub min_plausible_pack_volts: f64,
     pub max_plausible_pack_volts: f64,
     /// Second line of defence: cap what a *single* frame may add to the
-    /// counters. The thresholds above only bound the reading, while the
-    /// integration interval is bounded separately by `coulomb_max_gap_secs`, so
-    /// their product still allows an implausibly large delta. Observed
-    /// production peak per frame is far below these.
+    /// counters, in case the integration itself misbehaves.
+    ///
+    /// The defaults sit just above what the gate and `coulomb_max_gap_secs`
+    /// already permit together (`max_plausible_current_amperes` sustained for a
+    /// whole gap), because that combination is a real reading after a comms
+    /// drop, not an anomaly — clamping it would under-count energy after every
+    /// outage. Lower them only if the pack physically cannot take that much in
+    /// one interval; startup warns when they are set below that product.
     pub max_frame_amp_hours: f64,
     pub max_frame_watt_hours: f64,
     /// Minimum interval between durable writes of the state file. Increments
@@ -81,8 +85,8 @@ impl Default for Config {
             max_plausible_current_amperes: 100.0,
             min_plausible_pack_volts: 18.0,
             max_plausible_pack_volts: 34.0,
-            max_frame_amp_hours: 5.0,
-            max_frame_watt_hours: 150.0,
+            max_frame_amp_hours: 25.0,
+            max_frame_watt_hours: 900.0,
             coulomb_state_min_interval_secs: 5,
         }
     }
@@ -97,61 +101,91 @@ impl Config {
     /// Returns [`ConfigError::Io`] if the file exists but cannot be read, and
     /// [`ConfigError::Parse`] if its contents are not valid YAML for [`Config`].
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let mut cfg = match std::fs::read_to_string(path) {
-            Ok(text) => serde_norway::from_str::<Self>(&text).map_err(ConfigError::from)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
-            Err(e) => return Err(e.into()),
-        };
-        cfg.clamp_to_sane_ranges();
-        Ok(cfg)
+        match std::fs::read_to_string(path) {
+            Ok(text) => Ok(serde_norway::from_str::<Self>(&text).map_err(ConfigError::from)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Replace out-of-range values with their defaults, warning about each.
+    ///
+    /// Call this *after* the tracing subscriber is installed — otherwise every
+    /// warning below is a no-op and the substitution is silent, which defeats
+    /// the point of substituting rather than failing.
     ///
     /// These knobs are not merely cosmetic: `0` for the write interval removes
     /// the only rate limit on fsyncs triggered by unauthenticated input, and a
     /// value of, say, 86400 would silently turn `/metrics` into a day-stale
     /// feed. Rejecting the file outright would be worse — the exporter would
-    /// refuse to start over a typo — so clamp and say so.
-    fn clamp_to_sane_ranges(&mut self) {
+    /// refuse to start over a typo — so substitute and say so.
+    ///
+    /// `NaN` (a legal YAML `.nan`) is tested for explicitly: every comparison
+    /// against it is false, so a `NaN` threshold would slip through validation
+    /// and then switch the plausibility gate off without a word.
+    pub fn reset_out_of_range_to_defaults(&mut self) {
         let d = Self::default();
         if !(1..=3600).contains(&self.coulomb_state_min_interval_secs) {
             tracing::warn!(
                 value = self.coulomb_state_min_interval_secs,
                 default = d.coulomb_state_min_interval_secs,
-                "coulomb_state_min_interval_secs out of range 1..=3600; using the default"
+                "coulomb_state_min_interval_secs outside 1..=3600; using the default"
             );
             self.coulomb_state_min_interval_secs = d.coulomb_state_min_interval_secs;
         }
-        if self.max_plausible_current_amperes <= 0.0 {
+        if self.max_plausible_current_amperes.is_nan() || self.max_plausible_current_amperes <= 0.0
+        {
             tracing::warn!(
                 value = self.max_plausible_current_amperes,
-                "max_plausible_current_amperes must be positive; using the default"
+                "max_plausible_current_amperes must be a positive number; using the default"
             );
             self.max_plausible_current_amperes = d.max_plausible_current_amperes;
         }
         // An inverted window would reject every frame and silently switch off
         // energy accounting altogether, so fall back rather than honour it.
-        if self.min_plausible_pack_volts >= self.max_plausible_pack_volts {
+        if self.min_plausible_pack_volts.is_nan()
+            || self.max_plausible_pack_volts.is_nan()
+            || self.min_plausible_pack_volts >= self.max_plausible_pack_volts
+        {
             tracing::warn!(
                 min = self.min_plausible_pack_volts,
                 max = self.max_plausible_pack_volts,
-                "plausible pack-voltage window is inverted; using the defaults"
+                "plausible pack-voltage window is not an ordered pair; using the defaults"
             );
             self.min_plausible_pack_volts = d.min_plausible_pack_volts;
             self.max_plausible_pack_volts = d.max_plausible_pack_volts;
         }
-        if self.max_frame_amp_hours <= 0.0 {
+        if self.max_frame_amp_hours.is_nan() || self.max_frame_amp_hours <= 0.0 {
             tracing::warn!(
                 value = self.max_frame_amp_hours,
-                "max_frame_amp_hours must be positive; using the default"
+                "max_frame_amp_hours must be a positive number; using the default"
             );
             self.max_frame_amp_hours = d.max_frame_amp_hours;
         }
-        if self.max_frame_watt_hours <= 0.0 {
+        // Below this the clamp starts eating legitimate readings rather than
+        // anomalies: a full-length comms gap at the highest allowed current is
+        // recoverable data, not a glitch.
+        let gap_hours = self.coulomb_max_gap_secs as f64 / 3600.0;
+        let reachable_ah = self.max_plausible_current_amperes * gap_hours;
+        if self.max_frame_amp_hours < reachable_ah {
+            tracing::warn!(
+                ceiling = self.max_frame_amp_hours,
+                reachable = reachable_ah,
+                "max_frame_amp_hours is below what the plausibility gate and                  coulomb_max_gap_secs allow; long comms gaps will be under-counted"
+            );
+        }
+        let reachable_wh = reachable_ah * self.max_plausible_pack_volts;
+        if self.max_frame_watt_hours < reachable_wh {
+            tracing::warn!(
+                ceiling = self.max_frame_watt_hours,
+                reachable = reachable_wh,
+                "max_frame_watt_hours is below what the plausibility gate and                  coulomb_max_gap_secs allow; long comms gaps will be under-counted"
+            );
+        }
+        if self.max_frame_watt_hours.is_nan() || self.max_frame_watt_hours <= 0.0 {
             tracing::warn!(
                 value = self.max_frame_watt_hours,
-                "max_frame_watt_hours must be positive; using the default"
+                "max_frame_watt_hours must be a positive number; using the default"
             );
             self.max_frame_watt_hours = d.max_frame_watt_hours;
         }
@@ -172,9 +206,9 @@ impl Config {
 }
 
 /// Mapping config -> metrics knobs. It lives here rather than in `metrics.rs` so
-/// that module stays independent of the YAML layer (`config` imports nothing
-/// from the crate, so this direction cannot cycle). It cannot live in `main.rs`
-/// either — both types would be foreign there (orphan rule).
+/// that module stays independent of the YAML layer: `metrics` imports nothing
+/// from `config`, so the dependency runs one way only. It cannot live in
+/// `main.rs` either — both types would be foreign there (orphan rule).
 impl From<&Config> for crate::metrics::MetricsOptions {
     fn from(c: &Config) -> Self {
         Self {
@@ -239,7 +273,7 @@ mod tests {
              max_frame_amp_hours: 0.0\n",
         )
         .unwrap();
-        cfg.clamp_to_sane_ranges();
+        cfg.reset_out_of_range_to_defaults();
         // 0 would remove the only rate limit on fsyncs from unauthenticated input.
         assert_eq!(
             cfg.coulomb_state_min_interval_secs,
@@ -253,6 +287,41 @@ mod tests {
             d.max_plausible_current_amperes
         );
         assert_eq!(cfg.max_frame_amp_hours, d.max_frame_amp_hours);
+    }
+
+    #[test]
+    fn metrics_defaults_match_config_defaults() {
+        // The two Default impls carry the same numbers, and only this test keeps
+        // them in step: unit tests build Metrics from MetricsOptions::default(),
+        // while production goes through Config -> MetricsOptions. A drift would
+        // leave the production thresholds untested and the tested ones unshipped.
+        let from_config: crate::metrics::MetricsOptions = (&Config::default()).into();
+        let standalone = crate::metrics::MetricsOptions::default();
+        assert_eq!(
+            from_config.coulomb_max_gap_secs,
+            standalone.coulomb_max_gap_secs
+        );
+        assert_eq!(from_config.max_devices, standalone.max_devices);
+        assert_eq!(
+            from_config.state_min_interval,
+            standalone.state_min_interval
+        );
+        assert_eq!(
+            from_config.max_plausible_current_amperes,
+            standalone.max_plausible_current_amperes
+        );
+        assert_eq!(
+            from_config.plausible_pack_volts,
+            standalone.plausible_pack_volts
+        );
+        assert_eq!(
+            from_config.max_frame_amp_hours,
+            standalone.max_frame_amp_hours
+        );
+        assert_eq!(
+            from_config.max_frame_watt_hours,
+            standalone.max_frame_watt_hours
+        );
     }
 
     #[test]

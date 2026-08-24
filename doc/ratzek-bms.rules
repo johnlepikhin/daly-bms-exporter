@@ -57,7 +57,10 @@ groups:
         # per-window increments, so a counter reset no longer shows up as a
         # 20 kWh bar — it is invisible on the graphs. resets() sees the decrease
         # itself, down to the single ULP that caused the original incident.
-        expr: resets(daly_bms_charge_watt_hours_total[1h]) + resets(daly_bms_discharge_watt_hours_total[1h]) > 0
+        # `or`, not `+`: the watt-hour series are minted lazily, so a pack that
+        # has only ever charged has no discharge series and `+` (an inner join)
+        # would drop it from the result entirely.
+        expr: resets(daly_bms_charge_watt_hours_total[1h]) > 0 or resets(daly_bms_discharge_watt_hours_total[1h]) > 0
         for: 5m
         labels: { severity: warning }
         annotations:
@@ -68,7 +71,10 @@ groups:
         # broken write freezes energy accounting silently: flat graphs, no error
         # anywhere else. Guarded by frames_decoded so a genuinely offline device
         # does not fire this instead of RatzekBMSCommsLost.
-        expr: time() - daly_bms_state_last_write_timestamp_seconds > 900 and rate(daly_bms_frames_decoded_total[15m]) > 0
+        # `and on()` is load-bearing: the left side is an unlabelled gauge while
+        # the right carries `block`, and plain `and` matches on the full label
+        # set — the alert would never fire.
+        expr: time() - daly_bms_state_last_write_timestamp_seconds > 900 and on() sum(rate(daly_bms_frames_decoded_total[15m])) > 0
         for: 15m
         labels: { severity: warning }
         annotations:

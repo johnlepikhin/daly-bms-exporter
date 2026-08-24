@@ -851,6 +851,11 @@ impl Metrics {
         let Some(path) = &self.coulomb_state_path else {
             return;
         };
+        // Seed the freshness gauge with the start time: at this instant the file
+        // *is* current. Leaving it at zero would make the staleness alert read
+        // "never written since the epoch" for as long as the counters have no
+        // delta to persist — which is the normal state of an idle battery.
+        self.state_last_write_timestamp.set(now_unix_secs());
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
@@ -1695,6 +1700,22 @@ mod tests {
         // 10 A over the full 400 s, and 10*26 W over the same.
         assert!((ah - 10.0 * 400.0 / 3600.0).abs() < 1e-9, "got {ah} Ah");
         assert!((wh - 260.0 * 400.0 / 3600.0).abs() < 1e-9, "got {wh} Wh");
+    }
+
+    #[test]
+    fn restore_seeds_the_write_freshness_gauge() {
+        // Otherwise the staleness alert reads "not written since the epoch"
+        // whenever an idle battery gives the exporter nothing to persist.
+        let path = temp_state_path("restore-seeds-gauge");
+        std::fs::write(&path, br#"{"devices":{}}"#).unwrap();
+        let m = Metrics::new(MetricsOptions {
+            coulomb_state_path: Some(path.clone()),
+            ..Default::default()
+        });
+        assert_eq!(m.state_last_write_timestamp.get(), 0.0);
+        m.restore_coulombs();
+        assert!(m.state_last_write_timestamp.get() > 1.0e9);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

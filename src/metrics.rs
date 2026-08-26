@@ -196,8 +196,10 @@ pub struct Metrics {
     last_frame_timestamp: GaugeVec, // {sn}
     /// Failed durable writes of the coulomb state file, by stage.
     state_write_errors: IntCounterVec, // {stage}
-    /// Unix time of the last successful coulomb-state write. Exported so a
-    /// stalled accounting loop is detectable even when nothing errors.
+    /// Unix time at which the persisted state was last known to match the
+    /// counters — either a successful write, or a check that found nothing to
+    /// write. Exported so a stalled accounting loop is detectable even when
+    /// nothing errors; it must not age while the exporter is merely idle.
     state_last_write_timestamp: Gauge,
 
     /// Integration-interval cap for the coulomb counter (seconds).
@@ -570,7 +572,7 @@ impl Metrics {
             state_last_write_timestamp: register_gauge(
                 &r,
                 "daly_bms_state_last_write_timestamp_seconds",
-                "Unix time of the last successful coulomb/energy state write",
+                "Unix time at which the persisted coulomb/energy state was last known current",
             ),
             charge_amp_hours: register_counter_vec(
                 &r,
@@ -945,7 +947,14 @@ impl Metrics {
             }
             if !force {
                 if !coulombs.devices.values().any(LastSeries::has_pending) {
-                    return; // nothing to write; do not fsync on idle frames
+                    // Nothing to write: no fsync on idle frames. The file still
+                    // matches the counters, so the freshness gauge is stamped —
+                    // otherwise a resting battery (current at exactly 0 A
+                    // produces no delta) ages the gauge until the staleness
+                    // alert fires on a perfectly healthy exporter.
+                    drop(coulombs);
+                    self.state_last_write_timestamp.set(now_unix_secs());
+                    return;
                 }
                 if let Some(last) = coulombs.last_persist_at
                     && last.elapsed() < self.state_min_interval
@@ -1594,6 +1603,41 @@ mod tests {
 
         let _ = std::fs::remove_file(&blocker);
         let _ = std::fs::remove_file(&good);
+    }
+
+    #[test]
+    fn idle_frames_keep_the_freshness_gauge_current() {
+        // A resting battery reports exactly 0 A, which integrates to a zero
+        // delta and therefore never writes. The gauge must still advance, or
+        // the staleness alert fires on a healthy exporter — as it did in
+        // production on 2026-08-26.
+        let path = temp_state_path("idle-freshness");
+        let m = Metrics::new(MetricsOptions {
+            coulomb_state_path: Some(path.clone()),
+            state_min_interval: Duration::ZERO,
+            ..Default::default()
+        });
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
+        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 900.0);
+        let after_write = m.state_last_write_timestamp.get();
+        assert!(after_write > 1.0e9, "no write happened at all");
+
+        // Settle into idle first: the frame that *transitions* from 10 A to 0 A
+        // still integrates half the trapezoid, so it writes. Only once both
+        // endpoints are zero does the delta vanish.
+        m.accumulate_coulombs("SN1", Some(0.0), Some(26.0), 2_000.0);
+        m.accumulate_coulombs("SN1", Some(0.0), Some(26.0), 2_200.0);
+
+        // From here on every frame is a no-op write.
+        m.state_last_write_timestamp.set(0.0);
+        for i in 1..=5 {
+            m.accumulate_coulombs("SN1", Some(0.0), Some(26.0), 2_400.0 + f64::from(i) * 200.0);
+        }
+        assert!(
+            m.state_last_write_timestamp.get() > 1.0e9,
+            "freshness gauge went stale while idle"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -267,7 +267,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "watt",
+          "unit": "suffix: W",
           "color": {
             "mode": "thresholds"
           },
@@ -677,7 +677,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "watt",
+          "unit": "suffix: W",
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10,
@@ -3155,7 +3155,7 @@
       "interval": "1h",
       "fieldConfig": {
         "defaults": {
-          "unit": "watth",
+          "unit": "suffix: Wh",
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 70,
@@ -3253,7 +3253,7 @@
       "interval": "1d",
       "fieldConfig": {
         "defaults": {
-          "unit": "watth",
+          "unit": "suffix: Wh",
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 70,

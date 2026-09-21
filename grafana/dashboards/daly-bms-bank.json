@@ -215,7 +215,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "watt",
+          "unit": "suffix: W",
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 18,
@@ -272,7 +272,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "watth",
+          "unit": "suffix: Wh",
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 18,
@@ -330,7 +330,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "watth",
+          "unit": "suffix: Wh",
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 18,
@@ -388,7 +388,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "watth",
+          "unit": "suffix: Wh",
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 18,
@@ -629,7 +629,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "watt",
+          "unit": "suffix: W",
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10,
@@ -757,7 +757,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "watth",
+          "unit": "suffix: Wh",
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 70,
@@ -854,7 +854,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "watth",
+          "unit": "suffix: Wh",
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 70,
@@ -951,7 +951,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "watth",
+          "unit": "suffix: Wh",
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 70,

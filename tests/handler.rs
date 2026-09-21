@@ -151,6 +151,61 @@ async fn rejected_serial_creates_no_series() {
     assert!(metrics.contains("daly_bms_frames_dropped_total{reason=\"serial_rejected\"}"));
 }
 
+/// Value of a `{sn="SN1"}` series in the exposition text, if present.
+fn series_value(metrics: &str, name: &str, sn: &str) -> Option<f64> {
+    let prefix = format!("{name}{{sn=\"{sn}\"}}");
+    metrics
+        .lines()
+        .find_map(|l| l.strip_prefix(prefix.as_str()))
+        .map(|v| v.trim().parse().unwrap())
+}
+
+async fn post_realtime(app: &axum::Router, sn: &str, frame: &str) {
+    let body =
+        format!(r#"{{"Sn":"{sn}","Data":[{{"Command":"D2030000007ED649","Data":"{frame}"}}]}}"#);
+    assert_eq!(
+        post_json(app, "/api/v2/http2/SaveThingInfo1", body).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn implausible_current_frame_is_dropped_whole() {
+    // Regression for the 2026-09-21 production spike: one CRC-valid frame with
+    // current register 0x863E (436.6 A) in an otherwise sane block. The gauge
+    // showed it for a whole post interval and every derived power panel spiked.
+    let app = app(Config::default());
+    post_realtime(&app, "SN1", &realtime_frame_with_current(30_100)).await; // +10 A
+    let before = scrape(&app).await;
+    assert_eq!(
+        series_value(&before, "daly_bms_current_amperes", "SN1"),
+        Some(10.0)
+    );
+
+    post_realtime(&app, "SN1", &realtime_frame_with_current(0x863E)).await;
+    let metrics = scrape(&app).await;
+    assert_eq!(
+        series_value(&metrics, "daly_bms_current_amperes", "SN1"),
+        Some(10.0),
+        "gauge took the garbage current: {metrics}"
+    );
+    assert!(
+        metrics.contains("daly_bms_frames_dropped_total{reason=\"implausible_current\"} 1"),
+        "gate did not count the dropped frame: {metrics}"
+    );
+    assert!(
+        !metrics.contains("daly_bms_coulomb_samples_rejected_total{reason=\"implausible"),
+        "implausible frames are dropped, not counted as rejected samples: {metrics}"
+    );
+    // Dropped whole: nothing from that frame is a "decoded" frame either.
+    assert!(
+        metrics.contains("daly_bms_frames_decoded_total{block=\"realtime\"} 1"),
+        "dropped frame was counted as decoded: {metrics}"
+    );
+    // The POST itself still counts as contact with the device.
+    assert!(series_value(&metrics, "daly_bms_last_frame_timestamp_seconds", "SN1").is_some());
+}
+
 #[tokio::test]
 async fn implausible_current_frame_does_not_reach_the_energy_counters() {
     let app = app(Config::default());
@@ -163,36 +218,54 @@ async fn implausible_current_frame_does_not_reach_the_energy_counters() {
         realtime_frame_with_current(30_100), // +10 A again
     ];
     for f in frames {
-        let body =
-            format!(r#"{{"Sn":"SN1","Data":[{{"Command":"D2030000007ED649","Data":"{f}"}}]}}"#);
-        assert_eq!(
-            post_json(&app, "/api/v2/http2/SaveThingInfo1", body).await,
-            StatusCode::OK
-        );
+        post_realtime(&app, "SN1", &f).await;
     }
 
     let metrics = scrape(&app).await;
     assert!(
-        metrics
-            .contains("daly_bms_coulomb_samples_rejected_total{reason=\"implausible_current\"} 1"),
+        metrics.contains("daly_bms_frames_dropped_total{reason=\"implausible_current\"} 1"),
         "gate did not report the garbage frame: {metrics}"
-    );
-    // The garbage frame is decoded and exported as gauges, so it must not be
-    // counted as a dropped frame as well.
-    assert!(
-        !metrics.contains("daly_bms_frames_dropped_total"),
-        "gate must not inflate frames_dropped: {metrics}"
     );
     // The three POSTs happen within milliseconds, so the integrated amount is
     // negligible — what matters is that 3553 A never entered the integral.
-    let charged: f64 = metrics
-        .lines()
-        .find_map(|l| l.strip_prefix("daly_bms_charge_amp_hours_total{sn=\"SN1\"}"))
-        .map_or(0.0, |v| v.trim().parse().unwrap());
+    let charged = series_value(&metrics, "daly_bms_charge_amp_hours_total", "SN1").unwrap_or(0.0);
     assert!(
         charged < 0.01,
         "garbage current was integrated: {charged} Ah"
     );
+}
+
+#[tokio::test]
+async fn implausible_voltage_frame_is_dropped_whole() {
+    let app = app(Config::default());
+    let mut regs = vec![0u16; 126];
+    regs[0x28] = 0xFFFF; // 6553.5 V
+    regs[0x29] = 30_100; // +10 A, fine on its own
+    regs[0x2A] = 0x034A;
+    post_realtime(&app, "SN1", &build_frame(&regs)).await;
+    let metrics = scrape(&app).await;
+    assert!(
+        series_value(&metrics, "daly_bms_current_amperes", "SN1").is_none(),
+        "a frame with a garbage voltage must not set any gauge: {metrics}"
+    );
+    assert!(series_value(&metrics, "daly_bms_soc_percent", "SN1").is_none());
+    assert!(metrics.contains("daly_bms_frames_dropped_total{reason=\"implausible_voltage\"} 1"));
+}
+
+#[tokio::test]
+async fn drop_reasons_are_exported_before_any_drop() {
+    // A reason series born at its first increment is invisible to
+    // `increase()`; the alert on implausible frames relies on the zero baseline.
+    let app = app(Config::default());
+    let metrics = scrape(&app).await;
+    for reason in daly_bms_exporter::metrics::DROP_REASONS {
+        assert!(
+            metrics.contains(&format!(
+                "daly_bms_frames_dropped_total{{reason=\"{reason}\"}} 0"
+            )),
+            "missing zero baseline for {reason}: {metrics}"
+        );
+    }
 }
 
 #[tokio::test]

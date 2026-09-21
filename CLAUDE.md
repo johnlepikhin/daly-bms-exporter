@@ -32,6 +32,10 @@ Hlktech. Устройство периодически шлёт сырые Modbu
 - санитизацию логов — untrusted-строки логировать через `?`-Debug, не
   `%`-Display;
 - bounds-checked декодирование (`regs.get()`, клампы `MAX_CELLS` / `MAX_TEMPS`);
+- гейт правдоподобия (`RealtimeData::implausibility`, вызывается в
+  `server.rs` **до** любого обновления метрик): CRC-валидный кадр может нести
+  один мусорный регистр (в проде — 436.6 А при нормальных ячейках), такой кадр
+  отбрасывается целиком в `frames_dropped_total{reason="implausible_*"}`;
 - `#![forbid(unsafe_code)]`.
 
 ## Команды

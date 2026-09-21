@@ -12,7 +12,30 @@ use prometheus::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::decode::{ConfigData, Limits, RealtimeData};
+use crate::decode::{
+    ConfigData, DROP_IMPLAUSIBLE_CURRENT, DROP_IMPLAUSIBLE_VOLTAGE, Limits, RealtimeData,
+};
+
+/// Every `daly_bms_frames_dropped_total{reason}` label the exporter can emit.
+/// Kept as one list so the series can be pre-created at startup (see
+/// [`Metrics::new`]); `server.rs` must only ever record reasons from here.
+pub const DROP_REASONS: [&str; 11] = [
+    "bad_json",
+    "serial_rejected",
+    "device_limit",
+    "bad_command",
+    "unknown_block",
+    "bad_hex",
+    "too_short",
+    "bad_frame",
+    "crc",
+    DROP_IMPLAUSIBLE_CURRENT,
+    DROP_IMPLAUSIBLE_VOLTAGE,
+];
+
+/// The one `daly_bms_coulomb_samples_rejected_total{reason}` label left now
+/// that the plausibility gate drops frames upstream.
+pub const REJECT_CLAMPED_DELTA: &str = "clamped_delta";
 
 /// On-disk snapshot of the charge/energy counters, keyed by serial. The type and
 /// the state file (`coulombs.json`) keep the "coulomb" name for backward
@@ -210,12 +233,10 @@ pub struct Metrics {
     coulomb_state_path: Option<PathBuf>,
     /// Minimum interval between durable state writes.
     state_min_interval: Duration,
-    /// Plausibility gate thresholds; see [`MetricsOptions`].
-    max_plausible_current_amperes: f64,
-    plausible_pack_volts: (f64, f64),
+    /// Per-frame caps on the integrated delta; see [`MetricsOptions`].
     max_frame_amp_hours: f64,
     max_frame_watt_hours: f64,
-    /// Realtime samples rejected (or clamped) at integration, by reason.
+    /// Realtime samples whose delta was clamped at integration, by reason.
     coulomb_samples_rejected: IntCounterVec, // {reason}
     coulombs: Mutex<CoulombShared>,
 }
@@ -233,11 +254,9 @@ pub struct MetricsOptions {
     /// Minimum interval between durable writes of the state file. Deltas
     /// arriving inside the window are held in memory, not lost.
     pub state_min_interval: Duration,
-    /// Plausibility gate: reject a frame whose |current| exceeds this (amperes).
-    pub max_plausible_current_amperes: f64,
-    /// Plausibility gate: accepted pack-voltage window, `(min, max)` volts.
-    pub plausible_pack_volts: (f64, f64),
-    /// Per-frame cap on what one frame may add to the counters.
+    /// Per-frame cap on what one frame may add to the counters. The
+    /// plausibility gate itself is not a metrics concern: it lives in the
+    /// ingest handler (`server.rs`) and drops the frame before it gets here.
     pub max_frame_amp_hours: f64,
     pub max_frame_watt_hours: f64,
 }
@@ -249,8 +268,6 @@ impl Default for MetricsOptions {
             max_devices: 64,
             coulomb_state_path: None,
             state_min_interval: Duration::from_secs(5),
-            max_plausible_current_amperes: 100.0,
-            plausible_pack_volts: (18.0, 34.0),
             max_frame_amp_hours: 25.0,
             max_frame_watt_hours: 900.0,
         }
@@ -309,13 +326,11 @@ impl Metrics {
             max_devices,
             coulomb_state_path,
             state_min_interval,
-            max_plausible_current_amperes,
-            plausible_pack_volts,
             max_frame_amp_hours,
             max_frame_watt_hours,
         } = opts;
         let r = Registry::new();
-        Self {
+        let m = Self {
             pack_voltage: register_gauge_vec(
                 &r,
                 "daly_bms_pack_voltage_volts",
@@ -602,13 +617,23 @@ impl Metrics {
             max_devices,
             coulomb_state_path,
             state_min_interval,
-            max_plausible_current_amperes,
-            plausible_pack_volts,
             max_frame_amp_hours,
             max_frame_watt_hours,
             registry: r,
             coulombs: Mutex::new(CoulombShared::default()),
+        };
+        // Pre-create every known reason series at zero. A counter series that
+        // only appears on its first increment gives `increase()` nothing to
+        // compare against, so the very first drop — the one that matters — is
+        // invisible to the alert rule. This is what happened with the
+        // production 436.6 A frame: the sample was rejected, the series was
+        // born at 1, and RatzekBMSImplausibleSamples never fired.
+        for reason in DROP_REASONS {
+            m.frames_dropped.with_label_values(&[reason]);
         }
+        m.coulomb_samples_rejected
+            .with_label_values(&[REJECT_CLAMPED_DELTA]);
+        m
     }
 
     /// Whether a telemetry frame for `sn` should be processed. Returns `true`
@@ -781,9 +806,12 @@ impl Metrics {
     /// interval since the previous frame.
     ///
     /// Energy = current × voltage, so an anomalous frame inflates the monotonic
-    /// Wh counter more than the Ah one. Hence three bounds: `coulomb_max_gap_secs`
-    /// on the interval, the plausibility gate on the reading, and
-    /// `max_frame_amp_hours`/`max_frame_watt_hours` on the resulting delta.
+    /// Wh counter more than the Ah one. Hence three bounds: the plausibility
+    /// gate on the reading (applied upstream by the ingest handler, which drops
+    /// the frame before it reaches here), `coulomb_max_gap_secs` on the
+    /// interval, and `max_frame_amp_hours`/`max_frame_watt_hours` on the
+    /// resulting delta. Callers must not pass a frame that failed the gate:
+    /// this function trusts its input.
     ///
     /// The integrated deltas are not applied to the exported counters here; they
     /// are staged as `pending` and applied by [`Metrics::flush_coulomb_state`]
@@ -796,22 +824,8 @@ impl Metrics {
         now_secs: f64,
     ) {
         let Some(cur) = current_a else { return };
-        // Plausibility gate. The input is unauthenticated and the register
-        // encoding reaches 3553 A / 6553 V, so without this one corrupt frame
-        // dumps kilowatt-hours into a counter that can never be walked back.
-        // A frame is rejected whole: a garbage voltage register is evidence the
-        // frame is garbage, not just that one field.
-        if !cur.is_finite() || cur.abs() > self.max_plausible_current_amperes {
-            self.record_sample_rejected("implausible_current");
-            return;
-        }
-        let (min_v, max_v) = self.plausible_pack_volts;
-        // `None` is legal here: a frame without pack voltage still counts
+        // `pack_v == None` is legal: a frame without pack voltage still counts
         // amp-hours, it just cannot contribute energy.
-        if pack_v.is_some_and(|v| !v.is_finite() || v < min_v || v > max_v) {
-            self.record_sample_rejected("implausible_voltage");
-            return;
-        }
         let mut clamped = false;
         {
             let mut coulombs = self.coulombs.lock().unwrap_or_else(PoisonError::into_inner);
@@ -849,7 +863,7 @@ impl Metrics {
             entry.last_pack_v = pack_v;
         }
         if clamped {
-            self.record_sample_rejected("clamped_delta");
+            self.record_sample_rejected(REJECT_CLAMPED_DELTA);
         }
         self.flush_coulomb_state(false);
     }
@@ -1082,12 +1096,13 @@ impl Metrics {
         self.frames_decoded.with_label_values(&[block]).inc();
     }
 
-    /// Count a realtime sample rejected before integration.
+    /// Count a realtime sample whose integrated delta was clamped.
     ///
     /// Deliberately *not* `frames_dropped`: that family means "the frame never
-    /// reached any metric", while these frames are decoded, exported as gauges
-    /// and counted in `frames_decoded`. Reusing it would make the drop ratio
-    /// panels double-count the same frame.
+    /// reached any metric", while a clamped frame is decoded, exported as
+    /// gauges and counted in `frames_decoded`. Reusing it would make the drop
+    /// ratio panels double-count the same frame. (Implausible frames *are*
+    /// dropped whole, by the ingest handler, and do land in `frames_dropped`.)
     fn record_sample_rejected(&self, reason: &str) {
         self.coulomb_samples_rejected
             .with_label_values(&[reason])
@@ -1096,6 +1111,12 @@ impl Metrics {
 
     /// Count a dropped frame by reason.
     pub fn record_dropped(&self, reason: &str) {
+        // A reason outside the list would be born at 1 and invisible to
+        // `increase()`; the tests exercise every drop path, so this catches it.
+        debug_assert!(
+            DROP_REASONS.contains(&reason),
+            "drop reason {reason:?} is not pre-created in DROP_REASONS"
+        );
         self.frames_dropped.with_label_values(&[reason]).inc();
     }
 
@@ -1725,42 +1746,18 @@ mod tests {
     }
 
     #[test]
-    fn implausible_current_frame_is_rejected() {
+    fn drop_reason_series_exist_at_zero_from_startup() {
+        // `increase()` over a series that is born at its first increment
+        // returns nothing, so the first-ever drop cannot trip an alert. Every
+        // reason must therefore be exported as 0 before anything is dropped.
         let m = Metrics::new(MetricsOptions::default());
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
-        // 3553 A is the top of the wire encoding ((0xFFFF - 30000) * 0.1).
-        m.accumulate_coulombs("SN1", Some(3553.5), Some(26.0), 1_000.0 + 900.0);
-        assert_eq!(
-            counters(&m, "SN1"),
-            [0.0; 4],
-            "garbage frame was integrated"
-        );
         let body = m.render().1;
+        for reason in DROP_REASONS {
+            let line = format!("daly_bms_frames_dropped_total{{reason=\"{reason}\"}} 0");
+            assert!(body.contains(&line), "missing {line} in:\n{body}");
+        }
         assert!(
-            body.contains(
-                "daly_bms_coulomb_samples_rejected_total{reason=\"implausible_current\"} 1"
-            ),
-            "not reported: {body}"
-        );
-        // The frame is decoded and exported as gauges, so it must not also be
-        // counted as a dropped frame.
-        assert!(
-            !body.contains("daly_bms_frames_dropped_total"),
-            "gate must not inflate frames_dropped: {body}"
-        );
-    }
-
-    #[test]
-    fn implausible_voltage_frame_is_rejected() {
-        let m = Metrics::new(MetricsOptions::default());
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
-        // Valid current, garbage voltage register (0xFFFF * 0.1) -> whole frame.
-        m.accumulate_coulombs("SN1", Some(10.0), Some(6553.5), 1_000.0 + 900.0);
-        assert_eq!(counters(&m, "SN1"), [0.0; 4]);
-        assert!(
-            m.render().1.contains(
-                "daly_bms_coulomb_samples_rejected_total{reason=\"implausible_voltage\"}"
-            )
+            body.contains("daly_bms_coulomb_samples_rejected_total{reason=\"clamped_delta\"} 0")
         );
     }
 
@@ -1780,7 +1777,9 @@ mod tests {
         );
         assert!((wh - 99.0 * 33.0 * 0.25).abs() < 1e-9, "clamped: {wh} Wh");
         assert!(
-            !m.render().1.contains("reason=\"clamped_delta\""),
+            m.render()
+                .1
+                .contains("daly_bms_coulomb_samples_rejected_total{reason=\"clamped_delta\"} 0"),
             "a legitimate long gap must not be reported as clamped"
         );
     }
@@ -1791,7 +1790,6 @@ mod tests {
         // already allow, so it only bites when an operator deliberately sets it
         // below that — e.g. because their pack cannot physically take 25 Ah.
         let m = Metrics::new(MetricsOptions {
-            max_plausible_current_amperes: 20.0,
             max_frame_amp_hours: 1.0,
             max_frame_watt_hours: 30.0,
             ..Default::default()
@@ -1807,20 +1805,6 @@ mod tests {
                 .1
                 .contains("daly_bms_coulomb_samples_rejected_total{reason=\"clamped_delta\"}")
         );
-    }
-
-    #[test]
-    fn implausible_frame_keeps_baseline() {
-        // A rejected frame must not move the baseline: the next good frame then
-        // integrates cleanly across the whole interval instead of losing it.
-        let m = Metrics::new(MetricsOptions::default());
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
-        m.accumulate_coulombs("SN1", Some(3553.5), Some(26.0), 1_000.0 + 200.0);
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 400.0);
-        let [ah, _, wh, _] = counters(&m, "SN1");
-        // 10 A over the full 400 s, and 10*26 W over the same.
-        assert!((ah - 10.0 * 400.0 / 3600.0).abs() < 1e-9, "got {ah} Ah");
-        assert!((wh - 260.0 * 400.0 / 3600.0).abs() < 1e-9, "got {wh} Wh");
     }
 
     #[test]

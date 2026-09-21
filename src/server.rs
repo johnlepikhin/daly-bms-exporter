@@ -16,7 +16,7 @@ use tower_http::timeout::TimeoutLayer;
 use tracing::{debug, trace, warn};
 
 use crate::config::Config;
-use crate::decode::{Block, ConfigData, RealtimeData};
+use crate::decode::{Block, ConfigData, PlausibilityLimits, RealtimeData};
 use crate::metrics::Metrics;
 use crate::modbus;
 use crate::payload::TelemetryBody;
@@ -167,6 +167,13 @@ fn handle_entry(st: &AppState, sn: &str, command: &str, data: &str) -> Result<()
                 alarm_bits = ?d.alarm_bits,
                 "realtime frame decoded"
             );
+            // Plausibility gate, ahead of *every* metric update. A CRC-valid
+            // frame can still carry one garbage register (seen in production:
+            // 436.6 A with sane cells and voltage), and a gauge showing it for
+            // one post interval is a phantom spike on every derived panel.
+            // The raw hex is logged so the next occurrence can be analysed;
+            // it is device-supplied, hence `?`.
+            plausibility_check(st, sn, &d, data)?;
             st.metrics.update_realtime(sn, &d);
             st.metrics.accumulate_coulombs(
                 sn,
@@ -190,6 +197,34 @@ fn handle_entry(st: &AppState, sn: &str, command: &str, data: &str) -> Result<()
         }
     }
     Ok(())
+}
+
+/// Apply the configured plausibility limits to a decoded realtime frame.
+/// Returns the drop reason (a `DROP_REASONS` entry) for a frame that must not
+/// reach the metrics, logging it at `warn` with the raw payload.
+fn plausibility_check(
+    st: &AppState,
+    sn: &str,
+    d: &RealtimeData,
+    raw_hex: &str,
+) -> Result<(), &'static str> {
+    let limits = PlausibilityLimits::from(&*st.config);
+    match d.implausibility(&limits) {
+        None => Ok(()),
+        Some(reason) => {
+            warn!(
+                sn = ?sn,
+                reason,
+                current_a = ?d.current_a,
+                pack_v = ?d.pack_v,
+                max_current_a = limits.max_current_a,
+                pack_volts_window = ?limits.pack_volts,
+                raw = ?raw_hex,
+                "implausible realtime frame dropped"
+            );
+            Err(reason)
+        }
+    }
 }
 
 /// Map a decode error to a metric drop-reason label.

@@ -254,6 +254,49 @@ impl RealtimeData {
             serial: ascii(regs, REG_SERIAL_START, REG_SERIAL_END),
         }
     }
+
+    /// Why this frame fails the plausibility gate, or `None` if it passes.
+    ///
+    /// The wire encoding spans -3000..+3553 A and 0..6553 V, and the
+    /// controller has been seen emitting a single garbage current register
+    /// (436.6 A, raw `0x863E`) inside an otherwise sane, CRC-valid frame. A
+    /// frame that fails is treated as garbage *as a whole*: which register is
+    /// corrupt cannot be told in general, so nothing from it should reach any
+    /// metric. The returned string is the `frames_dropped_total{reason}` label.
+    ///
+    /// A frame without a current or pack-voltage register is not implausible,
+    /// merely incomplete — the gate only judges values that are present.
+    pub fn implausibility(&self, limits: &PlausibilityLimits) -> Option<&'static str> {
+        if self
+            .current_a
+            .is_some_and(|i| !i.is_finite() || i.abs() > limits.max_current_a)
+        {
+            return Some(DROP_IMPLAUSIBLE_CURRENT);
+        }
+        let (min_v, max_v) = limits.pack_volts;
+        if self
+            .pack_v
+            .is_some_and(|v| !v.is_finite() || v < min_v || v > max_v)
+        {
+            return Some(DROP_IMPLAUSIBLE_VOLTAGE);
+        }
+        None
+    }
+}
+
+/// Drop reason for a realtime frame whose |current| exceeds the plausible cap.
+pub const DROP_IMPLAUSIBLE_CURRENT: &str = "implausible_current";
+/// Drop reason for a realtime frame whose pack voltage is outside the window.
+pub const DROP_IMPLAUSIBLE_VOLTAGE: &str = "implausible_voltage";
+
+/// Thresholds for [`RealtimeData::implausibility`]. Mirrors the
+/// `max_plausible_current_amperes` / `min|max_plausible_pack_volts` config keys.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlausibilityLimits {
+    /// Largest |pack current| (A) accepted from the device.
+    pub max_current_a: f64,
+    /// Accepted pack-voltage window `(min, max)` in volts.
+    pub pack_volts: (f64, f64),
 }
 
 /// Configuration and protection thresholds (block 0x0080, §5).
@@ -416,6 +459,70 @@ mod tests {
         let data = RealtimeData::from_registers(&regs);
         assert_eq!(data.cells_v.len(), 2); // only the two non-zero slots
         assert_eq!(data.cells_v[0].0, 1);
+    }
+
+    const LIMITS: PlausibilityLimits = PlausibilityLimits {
+        max_current_a: 100.0,
+        pack_volts: (18.0, 34.0),
+    };
+
+    #[test]
+    fn plausibility_gate_rejects_the_production_garbage_frame() {
+        // 2026-09-21 on ratzek-3: current register 0x863E in an otherwise sane
+        // frame (12 cells at 2.17 V, pack 26.0 V). This is the exact input.
+        let mut regs = vec![0u16; 126];
+        regs[0x28] = 260; // 26.0 V
+        regs[0x29] = 0x863E; // (34366 - 30000) * 0.1 = 436.6 A
+        let d = RealtimeData::from_registers(&regs);
+        assert!((d.current_a.unwrap() - 436.6).abs() < 1e-9);
+        assert_eq!(d.implausibility(&LIMITS), Some(DROP_IMPLAUSIBLE_CURRENT));
+    }
+
+    #[test]
+    fn plausibility_gate_edges() {
+        let frame = |current_a: Option<f64>, pack_v: Option<f64>| RealtimeData {
+            current_a,
+            pack_v,
+            ..RealtimeData::default()
+        };
+        // The cap itself is allowed; one step past it is not, in both directions.
+        assert_eq!(frame(Some(100.0), Some(26.0)).implausibility(&LIMITS), None);
+        assert_eq!(
+            frame(Some(-100.0), Some(26.0)).implausibility(&LIMITS),
+            None
+        );
+        assert_eq!(
+            frame(Some(100.1), Some(26.0)).implausibility(&LIMITS),
+            Some(DROP_IMPLAUSIBLE_CURRENT)
+        );
+        assert_eq!(
+            frame(Some(-3000.0), Some(26.0)).implausibility(&LIMITS),
+            Some(DROP_IMPLAUSIBLE_CURRENT),
+            "an all-zero current register is -3000 A, not 0 A"
+        );
+        assert_eq!(
+            frame(Some(f64::NAN), Some(26.0)).implausibility(&LIMITS),
+            Some(DROP_IMPLAUSIBLE_CURRENT)
+        );
+        // Voltage window, inclusive.
+        assert_eq!(frame(Some(1.0), Some(18.0)).implausibility(&LIMITS), None);
+        assert_eq!(frame(Some(1.0), Some(34.0)).implausibility(&LIMITS), None);
+        assert_eq!(
+            frame(Some(1.0), Some(6553.5)).implausibility(&LIMITS),
+            Some(DROP_IMPLAUSIBLE_VOLTAGE)
+        );
+        assert_eq!(
+            frame(Some(1.0), Some(17.9)).implausibility(&LIMITS),
+            Some(DROP_IMPLAUSIBLE_VOLTAGE)
+        );
+        // Current is judged first: a frame failing both reports the current.
+        assert_eq!(
+            frame(Some(3553.5), Some(6553.5)).implausibility(&LIMITS),
+            Some(DROP_IMPLAUSIBLE_CURRENT)
+        );
+        // Absent registers are incomplete, not implausible.
+        assert_eq!(frame(None, None).implausibility(&LIMITS), None);
+        assert_eq!(frame(Some(1.0), None).implausibility(&LIMITS), None);
     }
 
     #[test]

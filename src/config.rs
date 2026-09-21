@@ -42,10 +42,12 @@ pub struct Config {
     /// on startup, so charge/discharge totals survive restarts. `None` disables
     /// persistence (counters reset on restart).
     pub coulomb_state_path: Option<PathBuf>,
-    /// Reject a realtime frame whose |pack current| exceeds this many amperes
-    /// before it can reach the coulomb/energy counters. The wire encoding spans
-    /// -3000..+3553 A, so one corrupt frame would otherwise dump kilowatt-hours
-    /// into a monotonic counter, irreversibly. Observed production peak: ~33 A.
+    /// Drop a realtime frame whose |pack current| exceeds this many amperes
+    /// before it can reach any metric — gauges as well as the coulomb/energy
+    /// counters. The wire encoding spans -3000..+3553 A; the controller has been
+    /// seen emitting a single 436.6 A register inside an otherwise sane frame,
+    /// and one such frame would dump kilowatt-hours into a monotonic counter,
+    /// irreversibly. Observed production peak: ~33 A.
     pub max_plausible_current_amperes: f64,
     /// Plausible pack-voltage window (volts) for the same gate. The encoding
     /// spans 0..6553 V; the production bank (LTO 24S) runs at 22..29 V.
@@ -216,10 +218,20 @@ impl From<&Config> for crate::metrics::MetricsOptions {
             max_devices: c.max_devices,
             coulomb_state_path: c.coulomb_state_path.clone(),
             state_min_interval: std::time::Duration::from_secs(c.coulomb_state_min_interval_secs),
-            max_plausible_current_amperes: c.max_plausible_current_amperes,
-            plausible_pack_volts: (c.min_plausible_pack_volts, c.max_plausible_pack_volts),
             max_frame_amp_hours: c.max_frame_amp_hours,
             max_frame_watt_hours: c.max_frame_watt_hours,
+        }
+    }
+}
+
+/// The plausibility gate thresholds, applied by the ingest handler to every
+/// realtime frame before it reaches any metric. Same one-way dependency
+/// argument as for `MetricsOptions` above.
+impl From<&Config> for crate::decode::PlausibilityLimits {
+    fn from(c: &Config) -> Self {
+        Self {
+            max_current_a: c.max_plausible_current_amperes,
+            pack_volts: (c.min_plausible_pack_volts, c.max_plausible_pack_volts),
         }
     }
 }
@@ -307,20 +319,30 @@ mod tests {
             standalone.state_min_interval
         );
         assert_eq!(
-            from_config.max_plausible_current_amperes,
-            standalone.max_plausible_current_amperes
-        );
-        assert_eq!(
-            from_config.plausible_pack_volts,
-            standalone.plausible_pack_volts
-        );
-        assert_eq!(
             from_config.max_frame_amp_hours,
             standalone.max_frame_amp_hours
         );
         assert_eq!(
             from_config.max_frame_watt_hours,
             standalone.max_frame_watt_hours
+        );
+    }
+
+    #[test]
+    fn plausibility_limits_come_from_config() {
+        let cfg = Config {
+            max_plausible_current_amperes: 42.0,
+            min_plausible_pack_volts: 20.0,
+            max_plausible_pack_volts: 30.0,
+            ..Config::default()
+        };
+        let limits: crate::decode::PlausibilityLimits = (&cfg).into();
+        assert_eq!(
+            limits,
+            crate::decode::PlausibilityLimits {
+                max_current_a: 42.0,
+                pack_volts: (20.0, 30.0),
+            }
         );
     }
 

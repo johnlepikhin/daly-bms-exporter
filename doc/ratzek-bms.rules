@@ -90,7 +90,14 @@ groups:
       - alert: RatzekBMSImplausibleSamples
         # Either the device/transport is producing garbage, or the plausibility
         # thresholds are too tight. Both are worth looking at; reason= says which.
-        expr: increase(daly_bms_coulomb_samples_rejected_total[1h]) > 0
+        # Implausible frames are dropped whole (frames_dropped_total, since
+        # 0.1.10); coulomb_samples_rejected_total is left for clamped deltas.
+        # The exporter pre-creates every reason series at 0, so increase() sees
+        # the very first drop — on 2026-09-21 a 436.6 A frame was rejected and
+        # this rule stayed silent because the series was born at 1.
+        expr: >
+          increase(daly_bms_frames_dropped_total{reason=~"implausible_.*"}[1h]) > 0
+          or increase(daly_bms_coulomb_samples_rejected_total[1h]) > 0
         for: 15m
         labels: { severity: info }
         annotations:

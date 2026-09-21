@@ -64,6 +64,40 @@ pub struct Config {
     /// one interval; startup warns when they are set below that product.
     pub max_frame_amp_hours: f64,
     pub max_frame_watt_hours: f64,
+    /// Run the pack current-sensor self-calibration. The estimator watches the
+    /// charge balance `∫I dt = ΔQ + ∫I_balance dt + offset·T` and subtracts the
+    /// offset it finds, feeding a parallel set of `daly_bms_calibrated_*`
+    /// counters; the raw counters are never touched. Set to `false` to stop the
+    /// estimator entirely (the calibrated series then stop updating).
+    pub calibration_enabled: bool,
+    /// Forgetting time constant of the estimator, in integrated hours. Long,
+    /// because the offset drifts far more slowly than the noise around it and
+    /// because the accuracy bound below scales with the window.
+    pub calibration_tau_hours: f64,
+    /// Integrated hours that must accumulate before any offset is applied. A
+    /// floor under `calibration_max_anchor_error_amperes`, which normally binds
+    /// first.
+    pub calibration_min_span_hours: f64,
+    /// Hard clamp on the applied offset (amperes), whatever the estimator says.
+    pub calibration_max_offset_amperes: f64,
+    /// Hold the correction until the estimate is provably good to within this
+    /// many amperes.
+    ///
+    /// The BMS's own state of charge anchors the estimate and is bounded by the
+    /// pack's capacity, so it can shift the result by at most `Cap / window` —
+    /// and the exporter knows that number exactly. On a 40 Ah pack, 0.05 A is
+    /// reached after ~800 integrated hours (~33 days). Lower it for a stricter
+    /// correction that takes proportionally longer to engage.
+    pub calibration_max_anchor_error_amperes: f64,
+    /// Freeze the correction when the parallel-peer cross-check and the charge
+    /// balance disagree by more than this (amperes).
+    ///
+    /// They are *not* expected to agree exactly: the peer regression measures
+    /// the sensor alone, while the balance also absorbs real losses the balancer
+    /// under-reports. In production the two sit ~50 mA apart. This threshold is
+    /// for gross breakage — a failing sensor, a pack leaving the bank — not for
+    /// policing that difference.
+    pub calibration_peer_max_disagreement_amperes: f64,
     /// Minimum interval between durable writes of the state file. Increments
     /// arriving inside the window are held in memory and applied to the exported
     /// counters only after the next successful write, so nothing is lost — but a
@@ -89,6 +123,12 @@ impl Default for Config {
             max_plausible_pack_volts: 34.0,
             max_frame_amp_hours: 25.0,
             max_frame_watt_hours: 900.0,
+            calibration_enabled: true,
+            calibration_tau_hours: 1440.0,
+            calibration_min_span_hours: 168.0,
+            calibration_max_offset_amperes: 0.5,
+            calibration_max_anchor_error_amperes: 0.05,
+            calibration_peer_max_disagreement_amperes: 0.25,
             coulomb_state_min_interval_secs: 5,
         }
     }
@@ -191,6 +231,74 @@ impl Config {
             );
             self.max_frame_watt_hours = d.max_frame_watt_hours;
         }
+        self.reset_calibration_out_of_range(&d);
+    }
+
+    /// Same substitute-and-warn treatment for the calibration knobs.
+    ///
+    /// Split out purely to keep `reset_out_of_range_to_defaults` readable. The
+    /// stakes here are lower than for the plausibility gate — a nonsensical
+    /// value can only skew the `daly_bms_calibrated_*` series, never the raw
+    /// counters — but a silently disabled correction is still worth a warning.
+    fn reset_calibration_out_of_range(&mut self, d: &Self) {
+        // Non-positive or NaN would make the forgetting factor `exp(-h/tau)`
+        // meaningless and the anchor bound infinite.
+        if self.calibration_tau_hours.is_nan() || self.calibration_tau_hours <= 0.0 {
+            tracing::warn!(
+                value = self.calibration_tau_hours,
+                "calibration_tau_hours must be a positive number; using the default"
+            );
+            self.calibration_tau_hours = d.calibration_tau_hours;
+        }
+        if self.calibration_min_span_hours.is_nan() || self.calibration_min_span_hours < 0.0 {
+            tracing::warn!(
+                value = self.calibration_min_span_hours,
+                "calibration_min_span_hours must not be negative; using the default"
+            );
+            self.calibration_min_span_hours = d.calibration_min_span_hours;
+        }
+        // Zero is a legal, meaningful setting for both thresholds below: it
+        // holds the correction forever while still publishing the estimate,
+        // which is exactly how to run the estimator in observe-only mode.
+        if self.calibration_max_offset_amperes.is_nan() || self.calibration_max_offset_amperes < 0.0
+        {
+            tracing::warn!(
+                value = self.calibration_max_offset_amperes,
+                "calibration_max_offset_amperes must not be negative; using the default"
+            );
+            self.calibration_max_offset_amperes = d.calibration_max_offset_amperes;
+        }
+        if self.calibration_max_anchor_error_amperes.is_nan()
+            || self.calibration_max_anchor_error_amperes < 0.0
+        {
+            tracing::warn!(
+                value = self.calibration_max_anchor_error_amperes,
+                "calibration_max_anchor_error_amperes must not be negative; using the default"
+            );
+            self.calibration_max_anchor_error_amperes = d.calibration_max_anchor_error_amperes;
+        }
+        // A non-positive threshold would freeze the correction the moment any
+        // peer is found, which reads as "calibration mysteriously stopped".
+        if self.calibration_peer_max_disagreement_amperes.is_nan()
+            || self.calibration_peer_max_disagreement_amperes <= 0.0
+        {
+            tracing::warn!(
+                value = self.calibration_peer_max_disagreement_amperes,
+                "calibration_peer_max_disagreement_amperes must be positive; using the default"
+            );
+            self.calibration_peer_max_disagreement_amperes =
+                d.calibration_peer_max_disagreement_amperes;
+        }
+        // The anchor gate needs `capacity/window <= threshold`, so a window
+        // shorter than the forgetting constant is what actually binds. Warn when
+        // the span floor is so long that it, not the accuracy bound, decides.
+        if self.calibration_min_span_hours > self.calibration_tau_hours {
+            tracing::warn!(
+                min_span = self.calibration_min_span_hours,
+                tau = self.calibration_tau_hours,
+                "calibration_min_span_hours exceeds calibration_tau_hours; the estimator never sees a window that long"
+            );
+        }
     }
 
     /// Whether a device-supplied serial should be accepted as a metric label.
@@ -220,6 +328,18 @@ impl From<&Config> for crate::metrics::MetricsOptions {
             state_min_interval: std::time::Duration::from_secs(c.coulomb_state_min_interval_secs),
             max_frame_amp_hours: c.max_frame_amp_hours,
             max_frame_watt_hours: c.max_frame_watt_hours,
+            calibration_enabled: c.calibration_enabled,
+            calibration: crate::calibration::Options {
+                tau_hours: c.calibration_tau_hours,
+                min_span_hours: c.calibration_min_span_hours,
+                max_offset_amperes: c.calibration_max_offset_amperes,
+                max_anchor_error_amperes: c.calibration_max_anchor_error_amperes,
+                peer_max_disagreement_amperes: c.calibration_peer_max_disagreement_amperes,
+                // The interval cap must match the counter's, or the estimator
+                // would measure time the counter did not integrate over.
+                max_gap_secs: c.coulomb_max_gap_secs as f64,
+                ..crate::calibration::Options::default()
+            },
         }
     }
 }
@@ -360,5 +480,38 @@ mod tests {
         };
         assert!(cfg.accept_serial("AAA"));
         assert!(!cfg.accept_serial("BBB"));
+    }
+
+    /// `config.example.yaml` ships inside the .deb and is what an operator
+    /// copies to get started, so a typo in it is a production footgun that no
+    /// other test would catch. Parsing it here also pins the documented
+    /// calibration values to the real defaults, so the two cannot drift apart.
+    #[test]
+    fn the_example_config_parses_and_documents_the_real_defaults() {
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.example.yaml"))
+                .expect("config.example.yaml is part of the repo");
+        let cfg: Config = serde_norway::from_str(&text).expect("example config must be valid YAML");
+        let d = Config::default();
+        assert_eq!(cfg.calibration_enabled, d.calibration_enabled);
+        assert_eq!(cfg.calibration_tau_hours, d.calibration_tau_hours);
+        assert_eq!(cfg.calibration_min_span_hours, d.calibration_min_span_hours);
+        assert_eq!(
+            cfg.calibration_max_offset_amperes,
+            d.calibration_max_offset_amperes
+        );
+        assert_eq!(
+            cfg.calibration_max_anchor_error_amperes,
+            d.calibration_max_anchor_error_amperes
+        );
+        assert_eq!(
+            cfg.calibration_peer_max_disagreement_amperes,
+            d.calibration_peer_max_disagreement_amperes
+        );
+        assert_eq!(cfg.max_frame_amp_hours, d.max_frame_amp_hours);
+        assert_eq!(
+            cfg.max_plausible_current_amperes,
+            d.max_plausible_current_amperes
+        );
     }
 }

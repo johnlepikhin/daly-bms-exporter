@@ -82,3 +82,62 @@ max_plausible_pack_volts: 34.0
 # interval; startup warns when they are set below that product.
 max_frame_amp_hours: 25.0
 max_frame_watt_hours: 900.0
+
+# --- Current-sensor self-calibration ----------------------------------------
+#
+# The BMS current register has a per-unit zero-point error. Integrated around
+# the clock it becomes phantom charge: in production one pack of three sat at
+# +150 mA, which is 3.6 Ah/day of "charge in" that never came back out and made
+# its energy-in counter outrun energy-out by 25% while its state of charge never
+# moved.
+#
+# The estimator uses the charge balance every pack obeys,
+#
+#     ∫I dt = ΔQ + ∫I_balance dt + offset·T + ε
+#
+# where Q is the BMS-reported remaining capacity. The offset is the slope of
+# that residual over time, fitted continuously with exponential forgetting.
+# Q comes from the BMS's own (equally biased) counter, but it is clamped to
+# 0..=capacity, so it can shift the fitted slope by at most Cap/window — a bound
+# the exporter computes and gates on, rather than trusting Q's value.
+#
+# The correction feeds a PARALLEL set of counters, daly_bms_calibrated_*. The
+# raw daly_bms_charge/discharge_* counters are never touched, so a bad estimate
+# can never damage the primary record.
+calibration_enabled: true
+
+# Forgetting time constant of the estimator, in *integrated* hours (time the
+# coulomb counter actually integrated over, so comms outages do not count).
+# Long on purpose: the offset drifts far slower than the noise around it — a
+# month of production data moved it by under 40 mA — and the accuracy bound
+# below improves with the window.
+calibration_tau_hours: 1440
+
+# Floor on the integrated hours before any correction is applied. Normally the
+# anchor-error gate below binds first; this just stops a pathological config
+# from correcting on a handful of frames.
+calibration_min_span_hours: 168
+
+# Hard clamp on the applied offset, whatever the estimator concludes.
+calibration_max_offset_amperes: 0.5
+
+# Hold the correction until the estimate is provably good to within this many
+# amperes — i.e. until Cap/window drops below it. On a 40 Ah pack, 0.05 A is
+# reached after ~800 integrated hours (~33 days), and the exporter exports its
+# progress as daly_bms_calibration_anchor_error_amperes. Set to 0 to run the
+# estimator in observe-only mode: it keeps publishing
+# daly_bms_current_offset_estimate_amperes but never applies it.
+calibration_max_anchor_error_amperes: 0.05
+
+# Cross-check. Packs wired in parallel carry near-identical current, so
+# regressing one pack's reading against another's measures the difference of
+# their zero errors directly — without any loss term. The exporter discovers
+# such peers from the data (slope near 1, high R²) and compares.
+#
+# The two estimates are NOT expected to match exactly: the balance equation also
+# absorbs real losses the balancer under-reports, while the peer regression sees
+# the sensor alone. In production they sit ~50 mA apart. This threshold is for
+# gross breakage — a failing sensor, a pack leaving the bank — and freezes the
+# applied offset at its last good value when it trips (visible as
+# daly_bms_calibration_hold = 4).
+calibration_peer_max_disagreement_amperes: 0.25

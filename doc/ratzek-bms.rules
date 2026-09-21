@@ -103,6 +103,49 @@ groups:
         annotations:
           summary: "Кадры BMS не проходят проверку правдоподобности ({{ $labels.reason }}) — мусор от устройства или слишком узкие пороги"
 
+      # --- Current-sensor self-calibration -----------------------------
+      # Background: each pack's current register has its own zero-point error.
+      # Integrated around the clock it becomes phantom charge — ratzek-2 sat at
+      # +150 mA, i.e. 3.6 Ah/day that went "in" and never came out, which is why
+      # its energy-in ran 25% ahead of energy-out at a flat SOC. The exporter now
+      # estimates that offset from the charge balance and feeds a parallel set of
+      # daly_bms_calibrated_* counters; the raw counters are untouched.
+
+      - alert: RatzekBMSCalibrationFrozen
+        # The parallel-pack cross-check and the charge balance stopped agreeing,
+        # so the correction is pinned at its last good value. Expect a steady
+        # ~50 mA gap between the two in normal operation — this fires only well
+        # past that, which means a sensor is drifting, a pack has left the bank,
+        # or the balancer reading has gone wrong.
+        expr: daly_bms_calibration_hold == 4
+        for: 6h
+        labels: { severity: warning }
+        annotations:
+          summary: "Калибровка тока [{{ $labels.battery }}] заморожена: параллельные пакеты и баланс заряда разошлись"
+
+      - alert: RatzekBMSCurrentOffsetHigh
+        # The correction is doing its job, but a pack needing more than 200 mA of
+        # it is a hardware observation worth acting on, not just bookkeeping: at
+        # that size the BMS's own SOC estimate is unusable (ratzek-2's pinned at
+        # 100% for weeks), and the offset masks how the bank is really loaded.
+        expr: abs(daly_bms_current_offset_estimate_amperes) > 0.2
+        for: 24h
+        labels: { severity: info }
+        annotations:
+          summary: "Датчик тока [{{ $labels.battery }}] смещён на {{ $value | humanize }} А — SOC этого пакета недостоверен"
+
+      - alert: RatzekBMSCalibrationStalled
+        # Warmup is normal and takes ~33 days from scratch on a 40 Ah pack, but
+        # the bound falls as 1/window, so after two months it must be well under
+        # the threshold. Still held past that means the estimator is not
+        # accumulating: frames without remaining capacity, or a gap cap eating
+        # the integration time.
+        expr: daly_bms_calibration_hold != 0 and daly_bms_calibration_span_hours > 1500
+        for: 12h
+        labels: { severity: info }
+        annotations:
+          summary: "Калибровка тока [{{ $labels.battery }}] не включается за {{ $value | humanize }} ч наблюдений — проверь, приходит ли remaining capacity"
+
       # --- Intentionally DISABLED (do not re-enable without reason) ---
       # RatzekBatterySOCCritical / RatzekBatterySOCLow: BMS SOC is unreliable on this
       #   controller; empty-battery is caught by RatzekBatteryVoltageLow (measured).

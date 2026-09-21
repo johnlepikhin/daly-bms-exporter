@@ -12,6 +12,7 @@ use prometheus::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::calibration::{self, Calibrator, Report, Sample};
 use crate::decode::{
     ConfigData, DROP_IMPLAUSIBLE_CURRENT, DROP_IMPLAUSIBLE_VOLTAGE, Limits, RealtimeData,
 };
@@ -43,6 +44,11 @@ pub const REJECT_CLAMPED_DELTA: &str = "clamped_delta";
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct CoulombState {
     devices: BTreeMap<String, CoulombEntry>,
+    /// Current-sensor calibration state. Rides in the same file as the counters
+    /// it feeds, so the two can never be restored out of step with each other.
+    /// Defaulted, so a state file written before calibration existed still loads.
+    #[serde(default)]
+    calibration: calibration::State,
 }
 
 /// Persisted charge (amp-hours) and energy (watt-hours) totals for one device.
@@ -56,6 +62,20 @@ struct CoulombEntry {
     charge_wh: f64,
     #[serde(default)]
     discharge_wh: f64,
+    /// The same four totals recomputed from the calibrated current. Defaulted
+    /// for the same reason as `*_wh`: an older state file simply starts them
+    /// fresh, which is safe because they are separate series.
+    #[serde(default)]
+    cal_charge_ah: f64,
+    #[serde(default)]
+    cal_discharge_ah: f64,
+    #[serde(default)]
+    cal_charge_wh: f64,
+    #[serde(default)]
+    cal_discharge_wh: f64,
+    /// Cumulative passive-balancer bleed (Ah).
+    #[serde(default)]
+    balance_ah: f64,
 }
 
 /// Directional split of an integrated quantity: exactly one side is non-zero.
@@ -102,6 +122,31 @@ impl std::ops::AddAssign for Split {
     }
 }
 
+/// One device's worth of integrated-but-not-yet-exported deltas.
+///
+/// Every field here obeys the same rule as `pending_ah` did on its own: it is
+/// added to a monotonic counter only after a state file containing the result
+/// has been fsynced.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Pending {
+    ah: Split,
+    wh: Split,
+    cal_ah: Split,
+    cal_wh: Split,
+    /// Balancer bleed is a magnitude, not a direction, so it needs no `Split`.
+    balance_ah: f64,
+}
+
+impl std::ops::AddAssign for Pending {
+    fn add_assign(&mut self, rhs: Self) {
+        self.ah += rhs.ah;
+        self.wh += rhs.wh;
+        self.cal_ah += rhs.cal_ah;
+        self.cal_wh += rhs.cal_wh;
+        self.balance_ah += rhs.balance_ah;
+    }
+}
+
 /// Per-device record of which cell/sensor series currently exist, so we can
 /// remove series that disappear (e.g. cell count shrinks or device goes away).
 #[derive(Default)]
@@ -122,26 +167,39 @@ struct LastSeries {
     /// populate the `serial` label of `daly_bms_device_info`. `None` until a
     /// realtime frame carrying a serial has been seen.
     realtime_serial: Option<String>,
+    /// Balancer bleed of the previous frame, for the same trapezoid.
+    last_balance_a: Option<f64>,
+    /// Calibration offset in force when the previous frame was integrated. The
+    /// calibrated trapezoid corrects each endpoint with the offset that applied
+    /// *at that endpoint*, so a moving offset never retroactively rewrites the
+    /// interval before it changed.
+    last_offset: Option<f64>,
+    /// Last `{sn, peer}` tuple written to the peer-check gauges, so the previous
+    /// series can be removed when the worst-disagreeing peer changes. Same
+    /// cardinality guard as `last_device_info`.
+    last_peer: Option<String>,
     /// Deltas already integrated but NOT yet applied to the exported counters.
     /// They are applied only once the state file holding them has been durably
     /// written, so the file can never be behind what /metrics has served.
-    pending_ah: Split,
-    pending_wh: Split,
+    pending: Pending,
 }
 
 impl LastSeries {
     /// Whether this device has deltas waiting for a durable write.
     fn has_pending(&self) -> bool {
-        self.pending_ah != Split::default() || self.pending_wh != Split::default()
+        self.pending != Pending::default()
     }
 }
 
 /// Everything behind the single coulomb mutex. Keeping the throttle
 /// timestamp inside the same guard (rather than in a second mutex) makes the
 /// "always locked together" rule structural instead of a comment.
-#[derive(Default)]
 struct CoulombShared {
     devices: HashMap<String, LastSeries>,
+    /// Current-sensor self-calibration. Behind the same mutex as the counters
+    /// so a frame's offset and the delta it produces can never interleave with
+    /// another frame's.
+    calibrator: Calibrator,
     /// Monotonic time of the last successful state write. `Instant`, not wall
     /// clock, so a system-time jump cannot stall or spam the writes.
     last_persist_at: Option<Instant>,
@@ -149,6 +207,17 @@ struct CoulombShared {
     /// Guards against two writers applying overlapping pending snapshots and
     /// double-counting them into the monotonic counters.
     writing: bool,
+}
+
+impl CoulombShared {
+    fn new(opts: calibration::Options) -> Self {
+        Self {
+            devices: HashMap::new(),
+            calibrator: Calibrator::new(opts),
+            last_persist_at: None,
+            writing: false,
+        }
+    }
 }
 
 /// Seconds since the Unix epoch as a float.
@@ -211,6 +280,25 @@ pub struct Metrics {
     // measured power V*I) {sn}.
     charge_watt_hours: CounterVec,
     discharge_watt_hours: CounterVec,
+    // The same four integrals recomputed from the self-calibrated current, plus
+    // the balancer bleed that explains most of what is left over {sn}.
+    cal_charge_amp_hours: CounterVec,
+    cal_discharge_amp_hours: CounterVec,
+    cal_charge_watt_hours: CounterVec,
+    cal_discharge_watt_hours: CounterVec,
+    balance_amp_hours: CounterVec,
+    // Calibration observability {sn}.
+    current_offset: GaugeVec,
+    current_offset_estimate: GaugeVec,
+    calibration_anchor_error: GaugeVec,
+    calibration_span_hours: GaugeVec,
+    calibration_fit_r2: GaugeVec,
+    calibration_hold: GaugeVec,
+    // Peer cross-check {sn, peer}.
+    calibration_peer_offset: GaugeVec,
+    calibration_peer_slope: GaugeVec,
+    calibration_peer_r2: GaugeVec,
+    calibration_peer_disagreement: GaugeVec,
 
     // Exporter self-observability.
     http_requests: IntCounterVec,   // {endpoint, status}
@@ -236,6 +324,9 @@ pub struct Metrics {
     /// Per-frame caps on the integrated delta; see [`MetricsOptions`].
     max_frame_amp_hours: f64,
     max_frame_watt_hours: f64,
+    /// When false the calibrator never runs: no offset, no calibrated counters,
+    /// no calibration gauges. The escape hatch if the estimator misbehaves.
+    calibration_enabled: bool,
     /// Realtime samples whose delta was clamped at integration, by reason.
     coulomb_samples_rejected: IntCounterVec, // {reason}
     coulombs: Mutex<CoulombShared>,
@@ -259,6 +350,10 @@ pub struct MetricsOptions {
     /// ingest handler (`server.rs`) and drops the frame before it gets here.
     pub max_frame_amp_hours: f64,
     pub max_frame_watt_hours: f64,
+    /// Run the current-sensor self-calibration.
+    pub calibration_enabled: bool,
+    /// Estimator tunables; see [`calibration::Options`].
+    pub calibration: calibration::Options,
 }
 
 impl Default for MetricsOptions {
@@ -270,6 +365,8 @@ impl Default for MetricsOptions {
             state_min_interval: Duration::from_secs(5),
             max_frame_amp_hours: 25.0,
             max_frame_watt_hours: 900.0,
+            calibration_enabled: true,
+            calibration: calibration::Options::default(),
         }
     }
 }
@@ -328,6 +425,8 @@ impl Metrics {
             state_min_interval,
             max_frame_amp_hours,
             max_frame_watt_hours,
+            calibration_enabled,
+            calibration,
         } = opts;
         let r = Registry::new();
         let m = Self {
@@ -607,6 +706,96 @@ impl Metrics {
                 "Cumulative charge energy in watt-hours (integral of measured V*I)",
                 &["sn"],
             ),
+            cal_charge_amp_hours: register_counter_vec(
+                &r,
+                "daly_bms_calibrated_charge_amp_hours_total",
+                "Cumulative charge throughput, self-calibrated current",
+                &["sn"],
+            ),
+            cal_discharge_amp_hours: register_counter_vec(
+                &r,
+                "daly_bms_calibrated_discharge_amp_hours_total",
+                "Cumulative discharge throughput, self-calibrated current",
+                &["sn"],
+            ),
+            cal_charge_watt_hours: register_counter_vec(
+                &r,
+                "daly_bms_calibrated_charge_watt_hours_total",
+                "Cumulative charge energy, self-calibrated current",
+                &["sn"],
+            ),
+            cal_discharge_watt_hours: register_counter_vec(
+                &r,
+                "daly_bms_calibrated_discharge_watt_hours_total",
+                "Cumulative discharge energy, self-calibrated current",
+                &["sn"],
+            ),
+            balance_amp_hours: register_counter_vec(
+                &r,
+                "daly_bms_balance_amp_hours_total",
+                "Cumulative charge bled off by the passive balancer",
+                &["sn"],
+            ),
+            current_offset: register_gauge_vec(
+                &r,
+                "daly_bms_current_offset_amperes",
+                "Offset currently subtracted from the reported pack current",
+                &["sn"],
+            ),
+            current_offset_estimate: register_gauge_vec(
+                &r,
+                "daly_bms_current_offset_estimate_amperes",
+                "Latest offset estimate, whether or not it is being applied",
+                &["sn"],
+            ),
+            calibration_anchor_error: register_gauge_vec(
+                &r,
+                "daly_bms_calibration_anchor_error_amperes",
+                "Worst-case error the bounded state of charge can induce in the estimate",
+                &["sn"],
+            ),
+            calibration_span_hours: register_gauge_vec(
+                &r,
+                "daly_bms_calibration_span_hours",
+                "Integrated hours behind the estimate",
+                &["sn"],
+            ),
+            calibration_fit_r2: register_gauge_vec(
+                &r,
+                "daly_bms_calibration_fit_r2",
+                "Goodness of fit of the closure regression",
+                &["sn"],
+            ),
+            calibration_hold: register_gauge_vec(
+                &r,
+                "daly_bms_calibration_hold",
+                "Why the estimate is not applied (0 applied, 1 warmup, 2 no_fit, 3 noisy, 4 peer_disagreement)",
+                &["sn"],
+            ),
+            calibration_peer_offset: register_gauge_vec(
+                &r,
+                "daly_bms_calibration_peer_offset_amperes",
+                "Offset relative to a parallel peer, measured by regressing the two currents",
+                &["sn", "peer"],
+            ),
+            calibration_peer_slope: register_gauge_vec(
+                &r,
+                "daly_bms_calibration_peer_slope",
+                "Slope of that peer regression (1.0 = the two packs share current equally)",
+                &["sn", "peer"],
+            ),
+            calibration_peer_r2: register_gauge_vec(
+                &r,
+                "daly_bms_calibration_peer_r2",
+                "Goodness of fit of that peer regression",
+                &["sn", "peer"],
+            ),
+            calibration_peer_disagreement: register_gauge_vec(
+                &r,
+                "daly_bms_calibration_peer_disagreement_amperes",
+                "Gap between the peer-measured and closure-derived offset difference",
+                &["sn", "peer"],
+            ),
             discharge_watt_hours: register_counter_vec(
                 &r,
                 "daly_bms_discharge_watt_hours_total",
@@ -619,8 +808,9 @@ impl Metrics {
             state_min_interval,
             max_frame_amp_hours,
             max_frame_watt_hours,
+            calibration_enabled,
             registry: r,
-            coulombs: Mutex::new(CoulombShared::default()),
+            coulombs: Mutex::new(CoulombShared::new(calibration)),
         };
         // Pre-create every known reason series at zero. A counter series that
         // only appears on its first increment gives `increase()` nothing to
@@ -816,14 +1006,9 @@ impl Metrics {
     /// The integrated deltas are not applied to the exported counters here; they
     /// are staged as `pending` and applied by [`Metrics::flush_coulomb_state`]
     /// once the state file containing them has been durably written.
-    pub fn accumulate_coulombs(
-        &self,
-        sn: &str,
-        current_a: Option<f64>,
-        pack_v: Option<f64>,
-        now_secs: f64,
-    ) {
-        let Some(cur) = current_a else { return };
+    pub fn accumulate_coulombs(&self, sn: &str, d: &RealtimeData, now_secs: f64) {
+        let Some(cur) = d.current_a else { return };
+        let pack_v = d.pack_v;
         // `pack_v == None` is legal: a frame without pack voltage still counts
         // amp-hours, it just cannot contribute energy.
         let mut clamped = false;
@@ -838,6 +1023,27 @@ impl Metrics {
                     .insert(sn.to_string(), LastSeries::default());
             }
             let gap = self.coulomb_max_gap_secs;
+
+            // Calibration runs first and on the *raw* reading: its estimator's
+            // whole input is the uncorrected current, and the offset it returns
+            // applies to this very frame. Both borrows of `coulombs` below touch
+            // disjoint fields, so they are taken one after the other.
+            let (offset, report) = if self.calibration_enabled {
+                let offset = coulombs.calibrator.observe(
+                    sn,
+                    Sample {
+                        current_a: cur,
+                        balance_a: d.balance_current_a,
+                        remaining_ah: d.remaining_ah,
+                        capacity_ah: self.rated_capacity_hint(sn),
+                        now_secs,
+                    },
+                );
+                (offset, coulombs.calibrator.report(sn))
+            } else {
+                (0.0, None)
+            };
+
             let entry = coulombs
                 .devices
                 .get_mut(sn)
@@ -847,25 +1053,121 @@ impl Metrics {
             if let (Some(last_ts), Some(last_cur)) = (entry.last_coulomb_ts, entry.last_current) {
                 let dt = now_secs - last_ts;
                 let ah = trapezoid_hours(last_cur, cur, dt, gap).clamped(self.max_frame_amp_hours);
-                entry.pending_ah += ah.value;
+                entry.pending.ah += ah.value;
                 clamped |= ah.was_clamped;
+                // The calibrated pair corrects each endpoint with the offset that
+                // was in force at that endpoint, so an offset that moves between
+                // frames never rewrites the interval before it moved.
+                let cal_prev = last_cur - entry.last_offset.unwrap_or(0.0);
+                let cal_cur = cur - offset;
+                let cal_ah =
+                    trapezoid_hours(cal_prev, cal_cur, dt, gap).clamped(self.max_frame_amp_hours);
+                entry.pending.cal_ah += cal_ah.value;
+                clamped |= cal_ah.was_clamped;
                 if let (Some(last_pv), Some(pv)) = (entry.last_pack_v, pack_v) {
                     // Power = V*I; trapezoid of power over the interval → watt-hours.
                     let wh = trapezoid_hours(last_cur * last_pv, cur * pv, dt, gap)
                         .clamped(self.max_frame_watt_hours);
-                    entry.pending_wh += wh.value;
+                    entry.pending.wh += wh.value;
                     clamped |= wh.was_clamped;
+                    let cal_wh = trapezoid_hours(cal_prev * last_pv, cal_cur * pv, dt, gap)
+                        .clamped(self.max_frame_watt_hours);
+                    entry.pending.cal_wh += cal_wh.value;
+                    clamped |= cal_wh.was_clamped;
+                }
+                if let (Some(last_bal), Some(bal)) = (entry.last_balance_a, d.balance_current_a) {
+                    // The bleed is a magnitude: a negative reading is a decode
+                    // artifact, not a balancer running backwards. Only the
+                    // `charge` side can be non-zero once both ends are clamped
+                    // at zero, so the `discharge` side is discarded.
+                    let bleed = trapezoid_hours(last_bal.max(0.0), bal.max(0.0), dt, gap)
+                        .clamped(self.max_frame_amp_hours);
+                    entry.pending.balance_ah += bleed.value.charge;
+                    clamped |= bleed.was_clamped;
                 }
             }
             entry.last_coulomb_ts = Some(now_secs);
             entry.last_current = Some(cur);
             // Only updated on frames that carry current (early return on None above).
             entry.last_pack_v = pack_v;
+            entry.last_balance_a = d.balance_current_a;
+            entry.last_offset = Some(offset);
+
+            if let Some(report) = report {
+                // Under the lock, like every other metric mutation here, so the
+                // published numbers cannot interleave with another frame's.
+                let stale_peer = entry.last_peer.clone();
+                entry.last_peer = report.peer.as_ref().map(|p| p.peer_sn.clone());
+                self.publish_calibration(sn, &report, stale_peer.as_deref());
+            }
         }
         if clamped {
             self.record_sample_rejected(REJECT_CLAMPED_DELTA);
         }
         self.flush_coulomb_state(false);
+    }
+
+    /// Rated capacity previously decoded from a config frame, if any.
+    ///
+    /// Read back out of the gauge rather than duplicated into a field: the gauge
+    /// *is* where `update_config` stores it, and a second copy could drift from
+    /// it. Zero (never set) reads as "unknown", which the calibrator handles by
+    /// falling back to the high-water mark of remaining capacity.
+    fn rated_capacity_hint(&self, sn: &str) -> Option<f64> {
+        let v = self.rated_capacity.with_label_values(&[sn]).get();
+        (v > 0.0).then_some(v)
+    }
+
+    /// Publish one device's calibration diagnostics, removing the peer-labelled
+    /// series of a peer that is no longer the worst-disagreeing one.
+    fn publish_calibration(&self, sn: &str, r: &Report, stale_peer: Option<&str>) {
+        self.current_offset.with_label_values(&[sn]).set(r.applied);
+        self.calibration_hold
+            .with_label_values(&[sn])
+            .set(r.hold.code());
+        self.calibration_span_hours
+            .with_label_values(&[sn])
+            .set(r.span_hours);
+        self.calibration_anchor_error
+            .with_label_values(&[sn])
+            .set(r.anchor_error);
+        if let Some(estimate) = r.estimate {
+            self.current_offset_estimate
+                .with_label_values(&[sn])
+                .set(estimate);
+        }
+        if let Some(r2) = r.r2 {
+            self.calibration_fit_r2.with_label_values(&[sn]).set(r2);
+        }
+
+        let current_peer = r.peer.as_ref().map(|p| p.peer_sn.as_str());
+        if let Some(stale) = stale_peer
+            && current_peer != Some(stale)
+        {
+            for m in [
+                &self.calibration_peer_offset,
+                &self.calibration_peer_slope,
+                &self.calibration_peer_r2,
+                &self.calibration_peer_disagreement,
+            ] {
+                let _ = m.remove_label_values(&[sn, stale]);
+            }
+        }
+        if let Some(p) = &r.peer {
+            let labels = [sn, p.peer_sn.as_str()];
+            self.calibration_peer_offset
+                .with_label_values(&labels)
+                .set(p.relative_offset);
+            self.calibration_peer_slope
+                .with_label_values(&labels)
+                .set(p.slope);
+            self.calibration_peer_r2
+                .with_label_values(&labels)
+                .set(p.r2);
+            self.calibration_peer_disagreement
+                .with_label_values(&labels)
+                .set(p.disagreement);
+        }
     }
 
     /// Restore the persisted counters from `coulomb_state_path` (if configured),
@@ -911,10 +1213,23 @@ impl Metrics {
             inc_if_positive(&self.discharge_amp_hours, sn, e.discharge_ah);
             inc_if_positive(&self.charge_watt_hours, sn, e.charge_wh);
             inc_if_positive(&self.discharge_watt_hours, sn, e.discharge_wh);
+            inc_if_positive(&self.cal_charge_amp_hours, sn, e.cal_charge_ah);
+            inc_if_positive(&self.cal_discharge_amp_hours, sn, e.cal_discharge_ah);
+            inc_if_positive(&self.cal_charge_watt_hours, sn, e.cal_charge_wh);
+            inc_if_positive(&self.cal_discharge_watt_hours, sn, e.cal_discharge_wh);
+            inc_if_positive(&self.balance_amp_hours, sn, e.balance_ah);
             // Track the serial so future writes keep persisting it.
             coulombs.devices.entry(sn.clone()).or_default();
             restored += 1;
         }
+        // The calibrator gets the same cardinality treatment: only serials that
+        // actually made it past the cap above are worth restoring an estimate
+        // for, and a pair naming a dropped serial is dead weight.
+        let admitted: std::collections::HashSet<String> =
+            coulombs.devices.keys().cloned().collect();
+        coulombs
+            .calibrator
+            .restore(state.calibration, |sn| admitted.contains(sn));
         tracing::info!(devices = restored, "restored coulomb/energy counters");
     }
 
@@ -978,21 +1293,43 @@ impl Metrics {
             }
             let snapshot = take_pending(&mut coulombs);
             let mut state = CoulombState::default();
-            for (sn, ah, wh) in &snapshot {
+            state.calibration = coulombs.calibrator.state();
+            for (sn, p) in &snapshot {
                 state.devices.insert(
                     sn.clone(),
                     CoulombEntry {
                         charge_ah: bump_ulp(
-                            self.charge_amp_hours.with_label_values(&[sn]).get() + ah.charge,
+                            self.charge_amp_hours.with_label_values(&[sn]).get() + p.ah.charge,
                         ),
                         discharge_ah: bump_ulp(
-                            self.discharge_amp_hours.with_label_values(&[sn]).get() + ah.discharge,
+                            self.discharge_amp_hours.with_label_values(&[sn]).get()
+                                + p.ah.discharge,
                         ),
                         charge_wh: bump_ulp(
-                            self.charge_watt_hours.with_label_values(&[sn]).get() + wh.charge,
+                            self.charge_watt_hours.with_label_values(&[sn]).get() + p.wh.charge,
                         ),
                         discharge_wh: bump_ulp(
-                            self.discharge_watt_hours.with_label_values(&[sn]).get() + wh.discharge,
+                            self.discharge_watt_hours.with_label_values(&[sn]).get()
+                                + p.wh.discharge,
+                        ),
+                        cal_charge_ah: bump_ulp(
+                            self.cal_charge_amp_hours.with_label_values(&[sn]).get()
+                                + p.cal_ah.charge,
+                        ),
+                        cal_discharge_ah: bump_ulp(
+                            self.cal_discharge_amp_hours.with_label_values(&[sn]).get()
+                                + p.cal_ah.discharge,
+                        ),
+                        cal_charge_wh: bump_ulp(
+                            self.cal_charge_watt_hours.with_label_values(&[sn]).get()
+                                + p.cal_wh.charge,
+                        ),
+                        cal_discharge_wh: bump_ulp(
+                            self.cal_discharge_watt_hours.with_label_values(&[sn]).get()
+                                + p.cal_wh.discharge,
+                        ),
+                        balance_ah: bump_ulp(
+                            self.balance_amp_hours.with_label_values(&[sn]).get() + p.balance_ah,
                         ),
                     },
                 );
@@ -1052,20 +1389,37 @@ impl Metrics {
     }
 
     /// Add a taken pending snapshot onto the exported counters.
-    fn apply_pending(&self, snapshot: &[(String, Split, Split)]) {
-        for (sn, ah, wh) in snapshot {
-            add_split(&self.charge_amp_hours, &self.discharge_amp_hours, sn, *ah);
-            add_split(&self.charge_watt_hours, &self.discharge_watt_hours, sn, *wh);
+    fn apply_pending(&self, snapshot: &[(String, Pending)]) {
+        for (sn, p) in snapshot {
+            add_split(&self.charge_amp_hours, &self.discharge_amp_hours, sn, p.ah);
+            add_split(
+                &self.charge_watt_hours,
+                &self.discharge_watt_hours,
+                sn,
+                p.wh,
+            );
+            add_split(
+                &self.cal_charge_amp_hours,
+                &self.cal_discharge_amp_hours,
+                sn,
+                p.cal_ah,
+            );
+            add_split(
+                &self.cal_charge_watt_hours,
+                &self.cal_discharge_watt_hours,
+                sn,
+                p.cal_wh,
+            );
+            inc_if_positive(&self.balance_amp_hours, sn, p.balance_ah);
         }
     }
 
     /// Put a taken pending snapshot back after a failed write, so the deltas are
     /// retried rather than lost.
-    fn requeue_pending(&self, coulombs: &mut CoulombShared, snapshot: &[(String, Split, Split)]) {
-        for (sn, ah, wh) in snapshot {
+    fn requeue_pending(&self, coulombs: &mut CoulombShared, snapshot: &[(String, Pending)]) {
+        for (sn, p) in snapshot {
             if let Some(e) = coulombs.devices.get_mut(sn) {
-                e.pending_ah += *ah;
-                e.pending_wh += *wh;
+                e.pending += *p;
             }
         }
     }
@@ -1278,14 +1632,13 @@ fn bump_ulp(v: f64) -> f64 {
 /// deltas out (rather than reading them in place) is what lets the write happen
 /// with the lock released — a frame arriving meanwhile accumulates on top of a
 /// zeroed field and is picked up by the next flush.
-fn take_pending(coulombs: &mut CoulombShared) -> Vec<(String, Split, Split)> {
+fn take_pending(coulombs: &mut CoulombShared) -> Vec<(String, Pending)> {
     coulombs
         .devices
         .iter_mut()
         .map(|(sn, e)| {
-            let taken = (sn.clone(), e.pending_ah, e.pending_wh);
-            e.pending_ah = Split::default();
-            e.pending_wh = Split::default();
+            let taken = (sn.clone(), e.pending);
+            e.pending = Pending::default();
             taken
         })
         .collect()
@@ -1336,6 +1689,17 @@ fn set_limit(m: &GaugeVec, sn: &str, l: Limits) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A realtime frame carrying just the two fields the coulomb counter reads.
+    /// Calibration needs `remaining_ah` on top of these, so a frame built here
+    /// exercises the raw counters only — which is what these tests are about.
+    fn frame(current_a: Option<f64>, pack_v: Option<f64>) -> RealtimeData {
+        RealtimeData {
+            current_a,
+            pack_v,
+            ..RealtimeData::default()
+        }
+    }
 
     #[test]
     fn render_contains_updated_series() {
@@ -1406,10 +1770,10 @@ mod tests {
     fn accumulate_coulombs_integrates_charge_and_energy() {
         let m = Metrics::new(MetricsOptions::default());
         // First frame just sets the baseline (no increment).
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0);
         // Second frame 3600 s later at 10 A / 26 V -> dt capped to 900 s ->
         // 2.5 Ah charge and (10*26)*900/3600 = 65 Wh charge.
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 3600.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0 + 3600.0);
         let body = m.render().1;
         assert!(
             body.contains("daly_bms_charge_amp_hours_total{sn=\"SN1\"} 2.5"),
@@ -1425,11 +1789,11 @@ mod tests {
     fn accumulate_coulombs_discharge_and_skips_energy_without_voltage() {
         let m = Metrics::new(MetricsOptions::default());
         // Discharge with voltage: -10 A / 26 V over 900 s -> 2.5 Ah and 65 Wh discharge.
-        m.accumulate_coulombs("SN1", Some(-10.0), Some(26.0), 1_000.0);
-        m.accumulate_coulombs("SN1", Some(-10.0), Some(26.0), 1_000.0 + 900.0);
+        m.accumulate_coulombs("SN1", &frame(Some(-10.0), Some(26.0)), 1_000.0);
+        m.accumulate_coulombs("SN1", &frame(Some(-10.0), Some(26.0)), 1_000.0 + 900.0);
         // Current present but no voltage: amp-hours accumulate, energy is skipped.
-        m.accumulate_coulombs("SN2", Some(-10.0), None, 2_000.0);
-        m.accumulate_coulombs("SN2", Some(-10.0), None, 2_000.0 + 900.0);
+        m.accumulate_coulombs("SN2", &frame(Some(-10.0), None), 2_000.0);
+        m.accumulate_coulombs("SN2", &frame(Some(-10.0), None), 2_000.0 + 900.0);
         let body = m.render().1;
         assert!(
             body.contains("daly_bms_discharge_amp_hours_total{sn=\"SN1\"} 2.5"),
@@ -1458,8 +1822,8 @@ mod tests {
                 coulomb_state_path: Some(path.clone()),
                 ..Default::default()
             });
-            m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0); // baseline
-            m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 3600.0); // +2.5 Ah / 65 Wh
+            m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0); // baseline
+            m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0 + 3600.0); // +2.5 Ah / 65 Wh
         }
         // A fresh instance (simulating a restart) restores both totals.
         let m2 = Metrics::new(MetricsOptions {
@@ -1477,6 +1841,267 @@ mod tests {
             .unwrap_or_else(|| panic!("no watt-hour series: {body}"));
         assert!((ah - 2.5).abs() < 1e-9, "restored {ah} Ah");
         assert!((wh - 65.0).abs() < 1e-9, "restored {wh} Wh");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A frame that also carries what the calibrator needs: the balancer bleed
+    /// and the BMS's remaining capacity.
+    fn cal_frame(
+        current_a: f64,
+        pack_v: f64,
+        balance_a: Option<f64>,
+        remaining_ah: Option<f64>,
+    ) -> RealtimeData {
+        RealtimeData {
+            current_a: Some(current_a),
+            pack_v: Some(pack_v),
+            balance_current_a: balance_a,
+            remaining_ah,
+            ..RealtimeData::default()
+        }
+    }
+
+    /// Calibration options with both warmup gates opened, so a test can reach
+    /// the applied-offset state in a handful of frames instead of a month.
+    fn eager_calibration() -> calibration::Options {
+        calibration::Options {
+            min_span_hours: 0.0,
+            max_anchor_error_amperes: 1_000.0,
+            ..calibration::Options::default()
+        }
+    }
+
+    #[test]
+    fn balancer_bleed_is_counted() {
+        let m = Metrics::new(MetricsOptions::default());
+        // 2 A of bleed for an hour, capped to the 900 s gap -> 0.5 Ah.
+        m.accumulate_coulombs("SN1", &cal_frame(0.0, 26.0, Some(2.0), None), 1_000.0);
+        m.accumulate_coulombs(
+            "SN1",
+            &cal_frame(0.0, 26.0, Some(2.0), None),
+            1_000.0 + 3600.0,
+        );
+        let body = m.render().1;
+        let ah = metric_value(&body, "daly_bms_balance_amp_hours_total{sn=\"SN1\"}")
+            .unwrap_or_else(|| panic!("no balance series: {body}"));
+        assert!((ah - 0.5).abs() < 1e-9, "counted {ah} Ah of bleed");
+    }
+
+    #[test]
+    fn a_negative_balance_reading_does_not_reduce_the_bleed_counter() {
+        // The register is a magnitude; a negative decode is noise, and a counter
+        // cannot go down anyway — it must simply contribute nothing.
+        let m = Metrics::new(MetricsOptions::default());
+        m.accumulate_coulombs("SN1", &cal_frame(0.0, 26.0, Some(-5.0), None), 1_000.0);
+        m.accumulate_coulombs(
+            "SN1",
+            &cal_frame(0.0, 26.0, Some(-5.0), None),
+            1_000.0 + 900.0,
+        );
+        let body = m.render().1;
+        assert!(
+            metric_value(&body, "daly_bms_balance_amp_hours_total{sn=\"SN1\"}")
+                .is_none_or(|v| v.abs() < 1e-12),
+            "negative bleed must not be counted: {body}"
+        );
+    }
+
+    #[test]
+    fn calibrated_counters_track_the_raw_ones_while_warming_up() {
+        let m = Metrics::new(MetricsOptions::default());
+        // Default options hold the correction for ~800 integrated hours, so the
+        // two sets of counters must agree exactly for now.
+        for i in 0..10 {
+            m.accumulate_coulombs(
+                "SN1",
+                &cal_frame(10.0, 26.0, Some(0.0), Some(20.0)),
+                1_000.0 + f64::from(i) * 300.0,
+            );
+        }
+        let body = m.render().1;
+        let raw = metric_value(&body, "daly_bms_charge_amp_hours_total{sn=\"SN1\"}")
+            .unwrap_or_else(|| panic!("no raw series: {body}"));
+        let cal = metric_value(
+            &body,
+            "daly_bms_calibrated_charge_amp_hours_total{sn=\"SN1\"}",
+        )
+        .unwrap_or_else(|| panic!("no calibrated series: {body}"));
+        assert!((raw - cal).abs() < 1e-9, "raw {raw} vs calibrated {cal}");
+        assert_eq!(
+            metric_value(&body, "daly_bms_calibration_hold{sn=\"SN1\"}"),
+            Some(1.0),
+            "must report the warmup hold"
+        );
+    }
+
+    #[test]
+    fn an_applied_offset_separates_the_calibrated_counters() {
+        let m = Metrics::new(MetricsOptions {
+            calibration: eager_calibration(),
+            ..Default::default()
+        });
+        // A steady 1 A "charge" that never moves the remaining capacity is,
+        // by the balance equation, entirely sensor offset. The estimate lands
+        // at 1 A and is clamped to the 0.5 A ceiling.
+        for i in 0..20 {
+            m.accumulate_coulombs(
+                "SN1",
+                &cal_frame(1.0, 26.0, Some(0.0), Some(20.0)),
+                1_000.0 + f64::from(i) * 300.0,
+            );
+        }
+        let body = m.render().1;
+        let offset = metric_value(&body, "daly_bms_current_offset_amperes{sn=\"SN1\"}")
+            .unwrap_or_else(|| panic!("no offset gauge: {body}"));
+        assert!((offset - 0.5).abs() < 1e-9, "offset {offset}");
+        let raw = metric_value(&body, "daly_bms_charge_amp_hours_total{sn=\"SN1\"}")
+            .unwrap_or_else(|| panic!("no raw series: {body}"));
+        let cal = metric_value(
+            &body,
+            "daly_bms_calibrated_charge_amp_hours_total{sn=\"SN1\"}",
+        )
+        .unwrap_or_else(|| panic!("no calibrated series: {body}"));
+        assert!(
+            cal < raw * 0.75,
+            "a 0.5 A correction on a 1 A reading must roughly halve it: raw {raw}, calibrated {cal}"
+        );
+        assert_eq!(
+            metric_value(&body, "daly_bms_calibration_hold{sn=\"SN1\"}"),
+            Some(0.0),
+            "the correction is applied, so nothing is holding it"
+        );
+    }
+
+    #[test]
+    fn calibration_can_be_switched_off() {
+        let m = Metrics::new(MetricsOptions {
+            calibration_enabled: false,
+            calibration: eager_calibration(),
+            ..Default::default()
+        });
+        for i in 0..20 {
+            m.accumulate_coulombs(
+                "SN1",
+                &cal_frame(1.0, 26.0, Some(0.0), Some(20.0)),
+                1_000.0 + f64::from(i) * 300.0,
+            );
+        }
+        let body = m.render().1;
+        assert!(
+            !body.contains("daly_bms_current_offset_amperes{"),
+            "a disabled estimator must publish no calibration series: {body}"
+        );
+        let raw =
+            metric_value(&body, "daly_bms_charge_amp_hours_total{sn=\"SN1\"}").expect("raw series");
+        let cal = metric_value(
+            &body,
+            "daly_bms_calibrated_charge_amp_hours_total{sn=\"SN1\"}",
+        )
+        .expect("calibrated series");
+        assert!(
+            (raw - cal).abs() < 1e-9,
+            "with no offset the two must stay identical: raw {raw}, calibrated {cal}"
+        );
+    }
+
+    #[test]
+    fn calibration_state_and_counters_survive_a_restart() {
+        let path = temp_state_path("calibration-persist");
+        let opts = || MetricsOptions {
+            coulomb_state_path: Some(path.clone()),
+            calibration: eager_calibration(),
+            ..Default::default()
+        };
+        {
+            let m = Metrics::new(opts());
+            for i in 0..20 {
+                m.accumulate_coulombs(
+                    "SN1",
+                    &cal_frame(1.0, 26.0, Some(0.2), Some(20.0)),
+                    1_000.0 + f64::from(i) * 300.0,
+                );
+            }
+            m.persist_coulombs();
+        }
+        let m2 = Metrics::new(opts());
+        m2.restore_coulombs();
+        // One more frame, so the restored estimator publishes its gauges again.
+        m2.accumulate_coulombs(
+            "SN1",
+            &cal_frame(1.0, 26.0, Some(0.2), Some(20.0)),
+            1_000.0 + 20.0 * 300.0,
+        );
+        let body = m2.render().1;
+        let offset = metric_value(&body, "daly_bms_current_offset_amperes{sn=\"SN1\"}")
+            .unwrap_or_else(|| panic!("no offset gauge after restart: {body}"));
+        assert!(
+            (offset - 0.5).abs() < 1e-9,
+            "the estimate must survive a restart, got {offset}"
+        );
+        assert!(
+            metric_value(&body, "daly_bms_balance_amp_hours_total{sn=\"SN1\"}")
+                .expect("balance series")
+                > 0.0,
+            "the bleed counter must be restored too"
+        );
+        assert!(
+            metric_value(
+                &body,
+                "daly_bms_calibrated_charge_amp_hours_total{sn=\"SN1\"}"
+            )
+            .expect("calibrated series")
+                > 0.0,
+            "the calibrated counter must be restored too"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn persisted_calibrated_totals_are_never_below_the_exported_ones() {
+        // The same invariant the raw counters have: a restart that restored a
+        // lower total would read to Prometheus as a counter reset, adding the
+        // whole accumulated total to `increase()`.
+        let path = temp_state_path("calibrated-never-below");
+        let m = Metrics::new(MetricsOptions {
+            coulomb_state_path: Some(path.clone()),
+            state_min_interval: Duration::from_millis(1),
+            calibration: eager_calibration(),
+            ..Default::default()
+        });
+        for i in 0..40 {
+            m.accumulate_coulombs(
+                "SN1",
+                &cal_frame(3.0, 26.5, Some(0.3), Some(20.0)),
+                1_000.0 + f64::from(i) * 120.0,
+            );
+            m.persist_coulombs();
+            let body = m.render().1;
+            let state: CoulombState =
+                serde_json::from_slice(&std::fs::read(&path).expect("state file"))
+                    .expect("valid state");
+            let e = state.devices.get("SN1").expect("device row");
+            for (name, on_disk) in [
+                (
+                    "daly_bms_calibrated_charge_amp_hours_total",
+                    e.cal_charge_ah,
+                ),
+                (
+                    "daly_bms_calibrated_discharge_amp_hours_total",
+                    e.cal_discharge_ah,
+                ),
+                (
+                    "daly_bms_calibrated_charge_watt_hours_total",
+                    e.cal_charge_wh,
+                ),
+                ("daly_bms_balance_amp_hours_total", e.balance_ah),
+            ] {
+                let exported = metric_value(&body, &format!("{name}{{sn=\"SN1\"}}")).unwrap_or(0.0);
+                assert!(
+                    on_disk >= exported,
+                    "iteration {i}: {name} on disk {on_disk} < exported {exported}"
+                );
+            }
+        }
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1530,8 +2155,7 @@ mod tests {
         for i in 0..50 {
             m.accumulate_coulombs(
                 "SN1",
-                Some(0.01),
-                Some(26.0),
+                &frame(Some(0.01), Some(26.0)),
                 1_000.0 + f64::from(i) * 200.0,
             );
             if !path.exists() {
@@ -1565,7 +2189,11 @@ mod tests {
                 ..Default::default()
             });
             for i in 0..10 {
-                m.accumulate_coulombs("SN1", Some(-3.0), Some(26.5), 1_000.0 + f64::from(i) * 60.0);
+                m.accumulate_coulombs(
+                    "SN1",
+                    &frame(Some(-3.0), Some(26.5)),
+                    1_000.0 + f64::from(i) * 60.0,
+                );
             }
             m.persist_coulombs();
             counters(&m, "SN1")
@@ -1595,8 +2223,8 @@ mod tests {
             ..Default::default()
         });
 
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 900.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0 + 900.0);
         assert_eq!(
             counters(&m, "SN1"),
             [0.0; 4],
@@ -1615,8 +2243,8 @@ mod tests {
             state_min_interval: Duration::ZERO,
             ..Default::default()
         });
-        recovered.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
-        recovered.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 900.0);
+        recovered.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0);
+        recovered.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0 + 900.0);
         assert!(
             (counters(&recovered, "SN1")[0] - 2.5).abs() < 1e-9,
             "expected the same 2.5 Ah the failing instance withheld"
@@ -1638,21 +2266,25 @@ mod tests {
             state_min_interval: Duration::ZERO,
             ..Default::default()
         });
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 900.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0 + 900.0);
         let after_write = m.state_last_write_timestamp.get();
         assert!(after_write > 1.0e9, "no write happened at all");
 
         // Settle into idle first: the frame that *transitions* from 10 A to 0 A
         // still integrates half the trapezoid, so it writes. Only once both
         // endpoints are zero does the delta vanish.
-        m.accumulate_coulombs("SN1", Some(0.0), Some(26.0), 2_000.0);
-        m.accumulate_coulombs("SN1", Some(0.0), Some(26.0), 2_200.0);
+        m.accumulate_coulombs("SN1", &frame(Some(0.0), Some(26.0)), 2_000.0);
+        m.accumulate_coulombs("SN1", &frame(Some(0.0), Some(26.0)), 2_200.0);
 
         // From here on every frame is a no-op write.
         m.state_last_write_timestamp.set(0.0);
         for i in 1..=5 {
-            m.accumulate_coulombs("SN1", Some(0.0), Some(26.0), 2_400.0 + f64::from(i) * 200.0);
+            m.accumulate_coulombs(
+                "SN1",
+                &frame(Some(0.0), Some(26.0)),
+                2_400.0 + f64::from(i) * 200.0,
+            );
         }
         assert!(
             m.state_last_write_timestamp.get() > 1.0e9,
@@ -1674,9 +2306,13 @@ mod tests {
             ..Default::default()
         });
 
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0);
         for i in 1..=20 {
-            m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + f64::from(i) * 60.0);
+            m.accumulate_coulombs(
+                "SN1",
+                &frame(Some(10.0), Some(26.0)),
+                1_000.0 + f64::from(i) * 60.0,
+            );
         }
         let errors = m
             .state_write_errors
@@ -1692,8 +2328,8 @@ mod tests {
         // Without persistence there is nothing to wait for, so increments must
         // still reach the counters immediately.
         let m = Metrics::new(MetricsOptions::default());
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 900.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0 + 900.0);
         assert!((counters(&m, "SN1")[0] - 2.5).abs() < 1e-9);
     }
 
@@ -1706,13 +2342,13 @@ mod tests {
             ..Default::default()
         });
         // First pending delta writes (no previous write to throttle against).
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 900.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0 + 900.0);
         let after_first = counters(&m, "SN1")[0];
         assert!((after_first - 2.5).abs() < 1e-9);
 
         // Everything after that is inside the window and stays pending.
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 1_800.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0 + 1_800.0);
         assert_eq!(
             counters(&m, "SN1")[0],
             after_first,
@@ -1736,8 +2372,8 @@ mod tests {
             state_min_interval: Duration::from_secs(3600),
             ..Default::default()
         });
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0);
-        m.accumulate_coulombs("SN1", Some(10.0), Some(26.0), 1_000.0 + 900.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0);
+        m.accumulate_coulombs("SN1", &frame(Some(10.0), Some(26.0)), 1_000.0 + 900.0);
         m.persist_coulombs();
         let once = counters(&m, "SN1");
         m.persist_coulombs();
@@ -1768,8 +2404,8 @@ mod tests {
         // recoverable reading after a comms drop, not an anomaly. Clamping it
         // would silently under-count energy after every WiFi outage.
         let m = Metrics::new(MetricsOptions::default());
-        m.accumulate_coulombs("SN1", Some(99.0), Some(33.0), 1_000.0);
-        m.accumulate_coulombs("SN1", Some(99.0), Some(33.0), 1_000.0 + 900.0);
+        m.accumulate_coulombs("SN1", &frame(Some(99.0), Some(33.0)), 1_000.0);
+        m.accumulate_coulombs("SN1", &frame(Some(99.0), Some(33.0)), 1_000.0 + 900.0);
         let [ah, _, wh, _] = counters(&m, "SN1");
         assert!(
             (ah - 99.0 * 0.25).abs() < 1e-9,
@@ -1794,8 +2430,8 @@ mod tests {
             max_frame_watt_hours: 30.0,
             ..Default::default()
         });
-        m.accumulate_coulombs("SN1", Some(20.0), Some(26.0), 1_000.0);
-        m.accumulate_coulombs("SN1", Some(20.0), Some(26.0), 1_000.0 + 900.0);
+        m.accumulate_coulombs("SN1", &frame(Some(20.0), Some(26.0)), 1_000.0);
+        m.accumulate_coulombs("SN1", &frame(Some(20.0), Some(26.0)), 1_000.0 + 900.0);
         let [ah, _, wh, _] = counters(&m, "SN1");
         // Uncapped this would be 5 Ah / 130 Wh.
         assert!((ah - 1.0).abs() < 1e-9, "amp-hours not clamped: {ah}");

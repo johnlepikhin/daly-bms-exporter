@@ -44,6 +44,20 @@ fn realtime_frame_with_current(current_raw: u16) -> String {
     build_frame(&regs)
 }
 
+/// A realtime block that also carries the two fields self-calibration needs:
+/// remaining capacity and the balancer's bleed current.
+fn realtime_frame_with_balance(current_raw: u16, remaining_raw: u16, balance_raw: u16) -> String {
+    let mut regs = vec![0u16; 126];
+    regs[0] = 2195; // cell 1 = 2.195 V
+    regs[0x28] = 0x010D; // pack voltage -> 26.9 V
+    regs[0x29] = current_raw;
+    regs[0x2A] = 0x034A; // SOC -> 84.2 %
+    regs[0x30] = remaining_raw; // remaining capacity, x0.1 Ah
+    regs[0x31] = 1; // cell count
+    regs[0x40] = balance_raw; // balance current, (raw - 30000) * 0.1
+    build_frame(&regs)
+}
+
 /// The same block at a steady 10 A charge (raw 30100).
 fn realtime_frame() -> String {
     realtime_frame_with_current(30_100)
@@ -313,5 +327,59 @@ async fn http_requests_recorded_by_endpoint_and_status() {
             .lines()
             .any(|l| l.contains("endpoint=\"other\"") && l.contains("status=\"404\"")),
         "unmatched path should record endpoint=other status=404"
+    );
+}
+
+/// End-to-end through the real HTTP handler: the balancer and calibration
+/// families must appear on `/metrics`, and the calibrated counters must equal
+/// the raw ones while the correction is still held in warmup.
+#[tokio::test]
+async fn calibration_and_balance_families_reach_metrics() {
+    let app = app(Config::default());
+    // Two frames a quarter of an hour apart at 10 A charge with 1 A of bleed:
+    // the first sets the baseline, the second produces the integral.
+    for _ in 0..2 {
+        let body = format!(
+            r#"{{"DeviceName":"dev","Sn":"SN1","Data":[{{"Command":"D2030000007ED649","Data":"{}"}}]}}"#,
+            realtime_frame_with_balance(30_100, 200, 30_010)
+        );
+        assert_eq!(
+            post_json(&app, "/api/v2/http2/SaveThingInfo1", body).await,
+            StatusCode::OK
+        );
+    }
+    let body = scrape(&app).await;
+    for family in [
+        "daly_bms_balance_amp_hours_total",
+        "daly_bms_calibrated_charge_amp_hours_total",
+        "daly_bms_calibrated_charge_watt_hours_total",
+        "daly_bms_current_offset_amperes",
+        "daly_bms_calibration_hold",
+        "daly_bms_calibration_anchor_error_amperes",
+    ] {
+        assert!(
+            body.contains(family),
+            "missing {family} in exposition:\n{body}"
+        );
+    }
+    // Default options hold the correction for ~800 integrated hours, so nothing
+    // is subtracted yet and the two counter sets must agree.
+    assert!(
+        body.contains("daly_bms_current_offset_amperes{sn=\"SN1\"} 0"),
+        "no correction may be applied during warmup:\n{body}"
+    );
+    // Which gate is holding depends on wall-clock timing the test does not
+    // control (two POSTs microseconds apart give the estimator almost no
+    // integrated time, and with three points or fewer it declines to fit at
+    // all), so assert the invariant rather than the particular reason: some
+    // gate is holding, and none of them is "applied".
+    let hold = body
+        .lines()
+        .find_map(|l| l.strip_prefix("daly_bms_calibration_hold{sn=\"SN1\"} "))
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no calibration_hold series:\n{body}"));
+    assert!(
+        hold > 0.0,
+        "a fresh device must not have an applied correction, got hold={hold}"
     );
 }

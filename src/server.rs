@@ -175,12 +175,8 @@ fn handle_entry(st: &AppState, sn: &str, command: &str, data: &str) -> Result<()
             // it is device-supplied, hence `?`.
             plausibility_check(st, sn, &d, data)?;
             st.metrics.update_realtime(sn, &d);
-            st.metrics.accumulate_coulombs(
-                sn,
-                d.current_a,
-                d.pack_v,
-                crate::metrics::now_unix_secs(),
-            );
+            st.metrics
+                .accumulate_coulombs(sn, &d, crate::metrics::now_unix_secs());
             st.metrics.record_decoded("realtime");
         }
         Block::Config => {

@@ -88,6 +88,21 @@ serial). Highlights:
   `daly_bms_discharge_amp_hours_total` (integral of current).
 - **Energy counter** — `daly_bms_charge_watt_hours_total` /
   `daly_bms_discharge_watt_hours_total` (integral of measured power `V*I`).
+- **Balancer bleed** — `daly_bms_balance_amp_hours_total` (integral of the
+  passive balancer's bleed current). This charge enters through the current
+  sensor and never comes back out, so it is a real part of the gap between
+  energy in and energy out — in production 9–14% of throughput.
+- **Self-calibrated counters** — `daly_bms_calibrated_charge_amp_hours_total`
+  and its three siblings: the same integrals computed after removing the pack
+  current sensor's estimated zero-point error. The raw counters above are never
+  modified by calibration.
+- **Calibration diagnostics** — `daly_bms_current_offset_amperes` (applied),
+  `daly_bms_current_offset_estimate_amperes` (estimated),
+  `daly_bms_calibration_anchor_error_amperes` (how accurate the estimate
+  provably is), `daly_bms_calibration_hold` (0 applied, 1 warmup, 2 no fit,
+  3 noisy, 4 peer disagreement), `daly_bms_calibration_span_hours`,
+  `daly_bms_calibration_fit_r2`, and the parallel-peer cross-check
+  `daly_bms_calibration_peer_{offset_amperes,slope,r2,disagreement_amperes}{peer}`.
 - **Staleness** — `daly_bms_last_frame_timestamp_seconds`.
 - **Self-observability** — `daly_bms_http_requests_total{endpoint,status}`,
   `daly_bms_frames_decoded_total{block}`,
@@ -105,6 +120,39 @@ Ready-made Grafana dashboards live in `grafana/dashboards/` (provider config in
 per-device repeat rows and a health section (per-cell imbalance / deviation, SOH
 estimate, C-rate, coulomb energy), `daly-bms-bank.json` covers bank totals.
 `make grafana REMOTE=<host>` deploys both.
+
+### Current-sensor self-calibration
+
+Each BMS's current register has its own zero-point error. Integrated around the
+clock it becomes phantom charge: on the production bank one pack of three sat at
++150 mA, which is 3.6 Ah/day of "charge in" that never came out — enough to make
+its energy-in counter run 25% ahead of energy-out while its state of charge never
+moved.
+
+The exporter estimates that offset from the charge balance every pack obeys,
+
+    ∫I dt = ΔQ + ∫I_balance dt + offset·T + ε
+
+where `Q` is the BMS-reported remaining capacity, and fits the slope
+continuously with exponential forgetting. `Q` comes from the BMS's own (equally
+biased) counter, but it is clamped to `0..=capacity`, so it can shift the fitted
+slope by at most `Cap / window` — a bound the exporter computes, exports as
+`daly_bms_calibration_anchor_error_amperes`, and gates on. Nothing is corrected
+until the estimate is provably good to within
+`calibration_max_anchor_error_amperes` (~33 days from scratch on a 40 Ah pack at
+the default 0.05 A).
+
+A second, independent estimator cross-checks it: packs wired in parallel carry
+near-identical current, so regressing one pack's reading against another's
+measures the difference of their zero errors with no loss term in it. Peers are
+discovered from the data — nothing declares the topology. The two estimates are
+*not* expected to match exactly (the charge balance also absorbs real losses the
+balancer under-reports; in production they sit ~50 mA apart), so the cross-check
+is tuned to catch gross breakage and freezes the correction when it trips.
+
+`examples/replay_history.rs` replays a Prometheus dump through the estimator, so
+a change to it can be checked against real recorded telemetry rather than only
+against the unit tests' synthetic ramps.
 
 Energy panels sum *clamped* 20-minute increments rather than calling
 `increase()` over the whole window, so a counter reset cannot spike them —

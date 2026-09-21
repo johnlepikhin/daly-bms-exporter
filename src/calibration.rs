@@ -267,11 +267,14 @@ pub struct Sample {
 
 /// Why the estimate is not being applied. Exported as a gauge so a dashboard can
 /// say which gate is holding rather than just "inactive".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Hold {
     /// Applied and trusted.
     None,
     /// The window is still too short for the anchor bound to be tight enough.
+    /// Also the default: a device with no estimator state yet is warming up, not
+    /// calibrated, so nothing can read as applied before the first frame.
+    #[default]
     Warmup,
     /// No fit at all (too few samples, or no spread along `x`).
     NoFit,
@@ -373,12 +376,6 @@ struct Live {
     last_raw: Option<(f64, f64)>,
     hold: Hold,
     peer: Option<PeerReport>,
-}
-
-impl Default for Hold {
-    fn default() -> Self {
-        Self::Warmup
-    }
 }
 
 /// Per-pair scratch: when the pair fit was last aged.

@@ -1,6 +1,21 @@
 {
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "enable": true,
+        "iconColor": "red",
+        "name": "Alerts firing",
+        "expr": "ALERTS{alertstate=\"firing\", alertname=~\"Ratzek.*\"}",
+        "step": "60s",
+        "titleFormat": "{{alertname}}",
+        "textFormat": "{{battery}} {{severity}}",
+        "useValueForTime": false
+      }
+    ]
   },
   "editable": true,
   "graphTooltip": 1,
@@ -8,7 +23,7 @@
     {
       "asDropdown": false,
       "icon": "external link",
-      "includeVars": false,
+      "includeVars": true,
       "keepTime": true,
       "tags": [],
       "targetBlank": false,
@@ -75,7 +90,7 @@
   "panels": [
     {
       "type": "row",
-      "id": 100,
+      "id": 212,
       "title": "Bank totals (measured — SOC intentionally excluded)",
       "collapsed": false,
       "gridPos": {
@@ -83,12 +98,13 @@
         "w": 24,
         "x": 0,
         "y": 0
-      }
+      },
+      "panels": []
     },
     {
       "type": "timeseries",
       "id": 101,
-      "title": "Bus voltage",
+      "title": "Bus voltage — avg / min / max",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -112,7 +128,52 @@
           },
           "decimals": 2
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "min"
+            },
+            "properties": [
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max"
+            },
+            "properties": [
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -138,7 +199,25 @@
           },
           "expr": "avg(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A",
-          "legendFormat": "bus V"
+          "legendFormat": "avg"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "min(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "refId": "B",
+          "legendFormat": "min"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "max(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "refId": "C",
+          "legendFormat": "max"
         }
       ]
     },
@@ -257,15 +336,16 @@
       ]
     },
     {
-      "type": "timeseries",
-      "id": 105,
+      "type": "stat",
+      "id": 200,
       "title": "Energy in (range)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Subquery points align to the epoch, which overstates ranges shorter than ~6 h (about +3% at 6 h, +16% at 1 h); use a day or more for exact totals.",
       "gridPos": {
-        "h": 6,
+        "h": 4,
         "w": 8,
         "x": 0,
         "y": 7
@@ -273,32 +353,31 @@
       "fieldConfig": {
         "defaults": {
           "unit": "suffix: Wh",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 18,
-            "showPoints": "never",
-            "lineWidth": 1,
-            "gradientMode": "opacity",
-            "lineInterpolation": "linear"
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
           },
           "decimals": 0
         },
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
           "calcs": [
-            "lastNotNull",
-            "min",
-            "max",
-            "mean"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
+            "lastNotNull"
+          ],
+          "fields": ""
         }
       },
       "targets": [
@@ -308,22 +387,21 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__range:20m]))",
-          "refId": "A",
-          "legendFormat": "energy in"
+          "refId": "A"
         }
-      ],
-      "description": "Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Subquery points align to the epoch, which overstates ranges shorter than ~6 h (about +3% at 6 h, +16% at 1 h); use a day or more for exact totals."
+      ]
     },
     {
-      "type": "timeseries",
-      "id": 106,
+      "type": "stat",
+      "id": 201,
       "title": "Energy out (range)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Subquery points align to the epoch, which overstates ranges shorter than ~6 h (about +3% at 6 h, +16% at 1 h); use a day or more for exact totals.",
       "gridPos": {
-        "h": 6,
+        "h": 4,
         "w": 8,
         "x": 8,
         "y": 7
@@ -331,32 +409,31 @@
       "fieldConfig": {
         "defaults": {
           "unit": "suffix: Wh",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 18,
-            "showPoints": "never",
-            "lineWidth": 1,
-            "gradientMode": "opacity",
-            "lineInterpolation": "linear"
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
           },
           "decimals": 0
         },
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
           "calcs": [
-            "lastNotNull",
-            "min",
-            "max",
-            "mean"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
+            "lastNotNull"
+          ],
+          "fields": ""
         }
       },
       "targets": [
@@ -366,22 +443,21 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__range:20m]))",
-          "refId": "A",
-          "legendFormat": "energy out"
+          "refId": "A"
         }
-      ],
-      "description": "Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Subquery points align to the epoch, which overstates ranges shorter than ~6 h (about +3% at 6 h, +16% at 1 h); use a day or more for exact totals."
+      ]
     },
     {
-      "type": "timeseries",
-      "id": 107,
+      "type": "stat",
+      "id": 202,
       "title": "Net energy (range)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Subquery points align to the epoch, which overstates ranges shorter than ~6 h (about +3% at 6 h, +16% at 1 h); use a day or more for exact totals.",
       "gridPos": {
-        "h": 6,
+        "h": 4,
         "w": 8,
         "x": 16,
         "y": 7
@@ -389,32 +465,35 @@
       "fieldConfig": {
         "defaults": {
           "unit": "suffix: Wh",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 18,
-            "showPoints": "never",
-            "lineWidth": 1,
-            "gradientMode": "opacity",
-            "lineInterpolation": "linear"
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
           },
           "decimals": 0
         },
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
           "calcs": [
-            "lastNotNull",
-            "min",
-            "max",
-            "mean"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
+            "lastNotNull"
+          ],
+          "fields": ""
         }
       },
       "targets": [
@@ -424,11 +503,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__range:20m])) - sum(sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__range:20m]))",
-          "refId": "A",
-          "legendFormat": "net"
+          "refId": "A"
         }
-      ],
-      "description": "Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Subquery points align to the epoch, which overstates ranges shorter than ~6 h (about +3% at 6 h, +16% at 1 h); use a day or more for exact totals."
+      ]
     },
     {
       "type": "stat",
@@ -440,9 +517,9 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 12,
+        "w": 8,
         "x": 0,
-        "y": 13
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -499,9 +576,9 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 12,
-        "x": 12,
-        "y": 13
+        "w": 8,
+        "x": 8,
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -553,128 +630,96 @@
       ]
     },
     {
+      "type": "stat",
+      "id": 203,
+      "title": "Round-trip efficiency (range)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Bank Wh out / Wh in over the selected range (measured V×I). Only meaningful over ranges that contain whole charge/discharge cycles (a week or more); over a short range it just reflects which half of the cycle you are looking at.",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 11
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 70
+              },
+              {
+                "color": "green",
+                "value": 85
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "100 * sum(sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__range:20m])) / sum(sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__range:20m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "type": "row",
-      "id": 110,
-      "title": "Bank — time series (measured)",
+      "id": 213,
+      "title": "Bank health — cells, temperatures, protections",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 17
-      }
+        "y": 15
+      },
+      "panels": []
     },
     {
       "type": "timeseries",
-      "id": 111,
-      "title": "Total current (A)",
+      "id": 204,
+      "title": "Cell voltage envelope — bank min / max",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Lowest and highest single cell across all online packs. With vendor SOC rejected this is the honest state-of-charge indicator for LTO: knee ≈2.5 V, do not exceed 2.8 V.",
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 18
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "amp",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "lineWidth": 1
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(daly_bms_current_amperes{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
-          "refId": "A",
-          "legendFormat": "total current"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "id": 112,
-      "title": "Total power (W)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 18
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "suffix: W",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "lineWidth": 1
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(daly_bms_pack_voltage_volts{battery=~\"$battery\"} * on(sn) daly_bms_current_amperes{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
-          "refId": "A",
-          "legendFormat": "total power"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "id": 113,
-      "title": "Bus voltage (V) — avg / min / max",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 18
+        "y": 16
       },
       "fieldConfig": {
         "defaults": {
@@ -683,16 +728,45 @@
             "drawStyle": "line",
             "fillOpacity": 10,
             "showPoints": "never",
-            "lineWidth": 1
+            "lineWidth": 1,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 2.5
+              },
+              {
+                "color": "orange",
+                "value": 2.7
+              },
+              {
+                "color": "red",
+                "value": 2.8
+              }
+            ]
           }
         },
         "overrides": []
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
-          "calcs": []
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
         },
         "tooltip": {
           "mode": "multi",
@@ -705,41 +779,353 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "avg(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "min(daly_bms_cell_voltage_min_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A",
-          "legendFormat": "avg"
+          "legendFormat": "lowest cell"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "min(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "max(daly_bms_cell_voltage_max_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "B",
-          "legendFormat": "min"
+          "legendFormat": "highest cell"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 205,
+      "title": "Cell delta per pack (mV)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "max−min cell voltage inside each pack. A pack drifting apart here is the usual cause of a current-share skew in the row below.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "daly_bms_cell_voltage_delta_volts{battery=~\"$battery\"} * 1000",
+          "refId": "A",
+          "legendFormat": "{{battery}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 206,
+      "title": "Temperatures",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Bank-wide cell temperature envelope plus MOS temperature per pack.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "max(daly_bms_temperature_max_celsius{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "refId": "A",
+          "legendFormat": "bank max cell"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "max(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "expr": "min(daly_bms_temperature_min_celsius{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
+          "refId": "B",
+          "legendFormat": "bank min cell"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "daly_bms_mos_temperature_celsius{battery=~\"$battery\"}",
           "refId": "C",
-          "legendFormat": "max"
+          "legendFormat": "{{battery}} MOS"
+        }
+      ]
+    },
+    {
+      "type": "state-timeline",
+      "id": 207,
+      "title": "MOS state per pack",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "1 = MOSFET closed (conducting). A single pack with its discharge MOS open shows up in the current-share panel as a skew — check here first.",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "open"
+                },
+                "1": {
+                  "text": "closed"
+                }
+              }
+            }
+          ],
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "rowHeight": 0.8,
+        "mergeValues": true,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "daly_bms_charge_mos{battery=~\"$battery\"}",
+          "refId": "A",
+          "legendFormat": "{{battery}} charge"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "daly_bms_discharge_mos{battery=~\"$battery\"}",
+          "refId": "B",
+          "legendFormat": "{{battery}} discharge"
+        }
+      ]
+    },
+    {
+      "type": "state-timeline",
+      "id": 208,
+      "title": "Alarms per pack",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Active alarm flags by type; the 'any' rows are always present so an all-clear still renders. Details per pack: Daly BMS → Alarms.",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "ok"
+                },
+                "1": {
+                  "text": "ALARM"
+                }
+              }
+            }
+          ],
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "rowHeight": 0.8,
+        "mergeValues": true,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "daly_bms_alarm{battery=~\"$battery\"} == 1",
+          "refId": "A",
+          "legendFormat": "{{battery}} {{type}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "max by(battery)(daly_bms_alarm{battery=~\"$battery\"})",
+          "refId": "B",
+          "legendFormat": "{{battery}} any"
         }
       ]
     },
     {
       "type": "row",
-      "id": 120,
+      "id": 214,
       "title": "Bank energy (Wh) — measured V×I, summed across packs",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 26
-      }
+        "y": 30
+      },
+      "panels": []
     },
     {
       "type": "timeseries",
@@ -753,7 +1139,7 @@
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 27
+        "y": 31
       },
       "fieldConfig": {
         "defaults": {
@@ -836,12 +1222,12 @@
         }
       ],
       "interval": "1h",
-      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / day / ~30d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty). Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart."
+      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / 24 h / 30 d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty). Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Buckets are aligned to the Unix epoch (UTC), not to local midnight — read them as rolling 24 h / 30 d bins, not calendar days/months."
     },
     {
       "type": "timeseries",
       "id": 122,
-      "title": "Energy per day (bank Σ, Wh)",
+      "title": "Energy per 24 h (bank Σ, Wh)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -850,7 +1236,7 @@
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 27
+        "y": 31
       },
       "fieldConfig": {
         "defaults": {
@@ -933,12 +1319,12 @@
         }
       ],
       "interval": "1d",
-      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / day / ~30d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty). Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart."
+      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / 24 h / 30 d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty). Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Buckets are aligned to the Unix epoch (UTC), not to local midnight — read them as rolling 24 h / 30 d bins, not calendar days/months."
     },
     {
       "type": "timeseries",
       "id": 126,
-      "title": "Energy per month (~30d, bank Σ, Wh)",
+      "title": "Energy per 30 d (bank Σ, Wh)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -947,7 +1333,7 @@
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 27
+        "y": 31
       },
       "fieldConfig": {
         "defaults": {
@@ -1030,179 +1416,11 @@
         }
       ],
       "interval": "30d",
-      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / day / ~30d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty). Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart."
-    },
-    {
-      "type": "stat",
-      "id": 123,
-      "title": "Charged (Ah, range)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 0,
-        "y": 36
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "decimals": 1,
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_charge_amp_hours_total{battery=~\"$battery\"}[20m]), 15)[$__range:20m]))",
-          "refId": "A"
-        }
-      ],
-      "description": "Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Subquery points align to the epoch, which overstates ranges shorter than ~6 h (about +3% at 6 h, +16% at 1 h); use a day or more for exact totals."
-    },
-    {
-      "type": "stat",
-      "id": 124,
-      "title": "Discharged (Ah, range)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 8,
-        "y": 36
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "decimals": 1,
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_discharge_amp_hours_total{battery=~\"$battery\"}[20m]), 15)[$__range:20m]))",
-          "refId": "A"
-        }
-      ],
-      "description": "Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Subquery points align to the epoch, which overstates ranges shorter than ~6 h (about +3% at 6 h, +16% at 1 h); use a day or more for exact totals."
-    },
-    {
-      "type": "stat",
-      "id": 125,
-      "title": "Net (Ah, range)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 16,
-        "y": 36
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "decimals": 1,
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
-        },
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_charge_amp_hours_total{battery=~\"$battery\"}[20m]), 15)[$__range:20m])) - sum(sum_over_time(clamp_max(increase(daly_bms_discharge_amp_hours_total{battery=~\"$battery\"}[20m]), 15)[$__range:20m]))",
-          "refId": "A"
-        }
-      ],
-      "description": "Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Subquery points align to the epoch, which overstates ranges shorter than ~6 h (about +3% at 6 h, +16% at 1 h); use a day or more for exact totals."
+      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / 24 h / 30 d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty). Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Buckets are aligned to the Unix epoch (UTC), not to local midnight — read them as rolling 24 h / 30 d bins, not calendar days/months."
     },
     {
       "type": "row",
-      "id": 130,
+      "id": 215,
       "title": "Pack balance / comparison (parallel bank)",
       "collapsed": false,
       "gridPos": {
@@ -1210,7 +1428,8 @@
         "w": 24,
         "x": 0,
         "y": 40
-      }
+      },
+      "panels": []
     },
     {
       "type": "table",
@@ -1220,7 +1439,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Per-pack snapshot. current-share = pack current / total. vendor SOC shown for reference only — the controller computes it incorrectly, do NOT treat it as ground truth. Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Subquery points align to the epoch, which overstates ranges shorter than ~6 h (about +3% at 6 h, +16% at 1 h); use a day or more for exact totals.",
+      "description": "Per-pack snapshot. V / current / share are freshness-gated (<10 min) so a dead pack cannot skew the share denominator; its row still shows via age / Wh / SOC. current-share = pack current / total. vendor SOC shown for reference only — the controller computes it incorrectly, do NOT treat it as ground truth. Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Subquery points align to the epoch, which overstates ranges shorter than ~6 h (about +3% at 6 h, +16% at 1 h); use a day or more for exact totals.",
       "gridPos": {
         "h": 8,
         "w": 24,
@@ -1311,6 +1530,38 @@
               {
                 "id": "decimals",
                 "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 300
+                    },
+                    {
+                      "color": "red",
+                      "value": 600
+                    }
+                  ]
+                }
               }
             ]
           },
@@ -1360,7 +1611,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by(battery)(daly_bms_pack_voltage_volts{battery=~\"$battery\"})",
+          "expr": "sum by(battery)(daly_bms_pack_voltage_volts{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "A",
           "format": "table",
           "instant": true
@@ -1370,7 +1621,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by(battery)(daly_bms_current_amperes{battery=~\"$battery\"})",
+          "expr": "sum by(battery)(daly_bms_current_amperes{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600))",
           "refId": "B",
           "format": "table",
           "instant": true
@@ -1380,7 +1631,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "100*sum by(battery)(daly_bms_current_amperes{battery=~\"$battery\"}) / scalar(sum(daly_bms_current_amperes{battery=~\"$battery\"}))",
+          "expr": "100*sum by(battery)(daly_bms_current_amperes{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600)) / scalar(sum(daly_bms_current_amperes{battery=~\"$battery\"} and on(sn) (time()-daly_bms_last_frame_timestamp_seconds{battery=~\"$battery\"} < 600)))",
           "refId": "C",
           "format": "table",
           "instant": true
@@ -1551,7 +1802,7 @@
         "uid": "${DS_PROMETHEUS}"
       },
       "gridPos": {
-        "h": 4,
+        "h": 8,
         "w": 6,
         "x": 18,
         "y": 49
@@ -1607,54 +1858,765 @@
       "description": "Measured pack-voltage spread across the bank (max-min). Larger under load = current-sharing/IR mismatch."
     },
     {
-      "type": "timeseries",
-      "id": 135,
-      "title": "vendor SOC per pack (unreliable)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+      "type": "row",
+      "id": 216,
+      "title": "Data integrity — why the energy numbers can be trusted",
+      "collapsed": true,
       "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 53
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 57
       },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "lineWidth": 1
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "calcs": []
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
+      "panels": [
         {
+          "type": "timeseries",
+          "id": 209,
+          "title": "Implausible / dropped frames per s",
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "daly_bms_soc_percent{battery=~\"$battery\"}",
-          "refId": "A",
-          "legendFormat": "{{battery}}"
+          "description": "Frames rejected before any metric update. A steady implausible_* rate means a pack is emitting garbage registers; the energy panels above exclude those frames.",
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 0,
+            "y": 58
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "lineWidth": 1
+              },
+              "decimals": 3
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "rate(daly_bms_frames_dropped_total[$__rate_interval])",
+              "refId": "A",
+              "legendFormat": "{{reason}}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "id": 210,
+          "title": "Coulomb samples rejected / state write errors per s",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "Non-zero here means the Wh/Ah counters are diverging from reality: samples dropped/clamped at integration, or the persisted state file failing to write (counter would reset on restart).",
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 8,
+            "y": 58
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "lineWidth": 1
+              },
+              "decimals": 3
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "rate(daly_bms_coulomb_samples_rejected_total[$__rate_interval])",
+              "refId": "A",
+              "legendFormat": "rejected: {{reason}}"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "rate(daly_bms_state_write_errors_total[$__rate_interval])",
+              "refId": "B",
+              "legendFormat": "write error: {{stage}}"
+            }
+          ]
+        },
+        {
+          "type": "stat",
+          "id": 211,
+          "title": "State file age",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "Seconds since the coulomb/energy state was last durably written. Grows only while the exporter receives no frames or the disk is failing; compare with 'Worst frame age'.",
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 16,
+            "y": 58
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 900
+                  },
+                  {
+                    "color": "red",
+                    "value": 3600
+                  }
+                ]
+              },
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "textMode": "value",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": ""
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "time() - daly_bms_state_last_write_timestamp_seconds",
+              "refId": "A"
+            }
+          ]
         }
-      ],
-      "description": "Vendor SOC — the controller computes it incorrectly; shown only to see per-pack divergence, NOT as ground truth."
+      ]
+    },
+    {
+      "type": "row",
+      "id": 217,
+      "title": "Current-sensor self-calibration",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 58
+      },
+      "panels": [
+        {
+          "type": "timeseries",
+          "id": 300,
+          "title": "Current offset — applied vs estimate",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 59
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "axisCenteredZero": true
+              },
+              "unit": "amp"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*estimate.*"
+                },
+                "properties": [
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dash",
+                      "dash": [
+                        8,
+                        4
+                      ]
+                    }
+                  },
+                  {
+                    "id": "custom.fillOpacity",
+                    "value": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "daly_bms_current_offset_amperes{battery=~\"$battery\"}",
+              "refId": "A",
+              "legendFormat": "{{battery}} applied"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "daly_bms_current_offset_estimate_amperes{battery=~\"$battery\"}",
+              "refId": "B",
+              "legendFormat": "{{battery}} estimate"
+            }
+          ],
+          "description": "What the exporter subtracts from each pack's reported current before feeding the daly_bms_calibrated_* counters, against what the estimator currently believes. They differ while a gate holds the correction — see the Calibration state panel. The raw daly_bms_charge/discharge_* counters are never touched by this."
+        },
+        {
+          "type": "timeseries",
+          "id": 301,
+          "title": "Peer cross-check — relative offset & disagreement",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 59
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "axisCenteredZero": true
+              },
+              "unit": "amp"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*disagreement.*"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "orange"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "daly_bms_calibration_peer_offset_amperes{battery=~\"$battery\"}",
+              "refId": "A",
+              "legendFormat": "{{battery}} vs {{peer}}"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "daly_bms_calibration_peer_disagreement_amperes{battery=~\"$battery\"}",
+              "refId": "B",
+              "legendFormat": "{{battery}} disagreement"
+            }
+          ],
+          "description": "Packs in parallel carry the same current, so regressing one pack's reading against a peer's measures the difference of their zero errors directly — with no loss term in it. Disagreement is the gap between that and what the charge balance concluded; it is expected to be non-zero (the balance also absorbs losses the balancer under-reports), so watch the trend, not the value. Crossing calibration_peer_max_disagreement_amperes freezes the correction."
+        },
+        {
+          "type": "timeseries",
+          "id": 302,
+          "title": "Accuracy bound of the estimate",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 67
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "axisCenteredZero": true
+              },
+              "unit": "amp"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "daly_bms_calibration_anchor_error_amperes{battery=~\"$battery\"}",
+              "refId": "A",
+              "legendFormat": "{{battery}}"
+            }
+          ],
+          "description": "Cap / window: the worst the BMS's own (bounded) state of charge can still be skewing the estimate. The correction stays held until this drops below calibration_max_anchor_error_amperes, so this panel is the warmup progress bar — it falls as 1/window."
+        },
+        {
+          "type": "state-timeline",
+          "id": 303,
+          "title": "Calibration state",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "Why the correction is or is not being applied. 'warmup' is the normal state for the first ~33 days on a 40 Ah pack; 'peer disagreement' means the parallel packs and the charge balance stopped telling the same story and the offset has been frozen at its last good value.",
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 67
+          },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "0": {
+                      "text": "applied",
+                      "color": "green",
+                      "index": 0
+                    },
+                    "1": {
+                      "text": "warmup",
+                      "color": "blue",
+                      "index": 1
+                    },
+                    "2": {
+                      "text": "no fit",
+                      "color": "text",
+                      "index": 2
+                    },
+                    "3": {
+                      "text": "noisy",
+                      "color": "orange",
+                      "index": 3
+                    },
+                    "4": {
+                      "text": "peer disagreement",
+                      "color": "red",
+                      "index": 4
+                    }
+                  }
+                }
+              ],
+              "custom": {
+                "lineWidth": 0,
+                "fillOpacity": 80
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "mergeValues": true,
+            "showValue": "auto",
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "daly_bms_calibration_hold{battery=~\"$battery\"}",
+              "refId": "A",
+              "legendFormat": "{{battery}}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "id": 304,
+          "title": "Balancer bleed per 24 h (Ah)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 67
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "bars",
+                "fillOpacity": 70,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "axisCenteredZero": true,
+                "barAlignment": 0
+              },
+              "unit": "suffix: Ah"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "sum_over_time(clamp_max(increase(daly_bms_balance_amp_hours_total{battery=~\"$battery\"}[20m]), 5)[$__interval:20m])",
+              "refId": "A",
+              "legendFormat": "{{battery}}"
+            }
+          ],
+          "description": "Charge the passive balancer burns in its resistors. It enters through the current sensor and never comes back out, so it is a real part of the gap between energy in and energy out — in production 9–14% of throughput, which is most of what the raw counters showed as 'losses'."
+        },
+        {
+          "type": "timeseries",
+          "id": 305,
+          "title": "Energy per 24 h — raw vs calibrated (bank Σ, Wh)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 0,
+            "y": 75
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "bars",
+                "fillOpacity": 60,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "axisCenteredZero": true,
+                "barAlignment": 0
+              },
+              "unit": "suffix: Wh"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "A"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "green"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "B"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "orange"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "C"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "semi-dark-green"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "D"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "semi-dark-orange"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+              "refId": "A",
+              "legendFormat": "in (raw)"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "-sum(sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+              "refId": "B",
+              "legendFormat": "out (raw)"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_calibrated_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+              "refId": "C",
+              "legendFormat": "in (calibrated)"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "-sum(sum_over_time(clamp_max(increase(daly_bms_calibrated_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+              "refId": "D",
+              "legendFormat": "out (calibrated)"
+            }
+          ],
+          "description": "The payoff panel. While the correction is held the two pairs sit on top of each other; once it engages, the calibrated pair is the one whose books balance."
+        },
+        {
+          "type": "stat",
+          "id": 306,
+          "title": "Round-trip efficiency, calibrated (range)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "The same figure as the headline efficiency stat, but computed from the calibrated counters. Over a range holding whole cycles the remaining gap should be the balancer bleed plus the ~1.5% charge/discharge voltage difference — not a sensor that cannot find zero.",
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 12,
+            "y": 75
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 0,
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 70
+                  },
+                  {
+                    "color": "green",
+                    "value": 85
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": ""
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "100 * sum(sum_over_time(clamp_max(increase(daly_bms_calibrated_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__range:20m])) / sum(sum_over_time(clamp_max(increase(daly_bms_calibrated_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__range:20m]))",
+              "refId": "A"
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -551,8 +551,22 @@ impl Calibrator {
             ),
         };
 
+        // The peer report is always published — the disagreement is a useful
+        // diagnostic on its own — but it may only veto a correction that would
+        // otherwise be applied.
+        //
+        // Comparing the two estimators before the closure estimate is eligible
+        // is meaningless: during warmup the closure slope is dominated by the
+        // state-of-charge excursion that `anchor_error` bounds (±1.6 A after a
+        // day on a 40 Ah pack), while the peer regression is already accurate to
+        // tens of milliamps. They will disagree by construction, every time. A
+        // `PeerDisagreement` raised there also hides the real reason the
+        // correction is held, and makes any alert on it fire on a healthy pack
+        // that has simply not finished warming up — which is exactly what
+        // happened on the first day in production.
         let peer = self.peer_report(sn, fit.map(|f| f.slope));
-        if let Some(p) = &peer
+        if hold == Hold::None
+            && let Some(p) = &peer
             && p.disagreement > self.opts.peer_max_disagreement_amperes
         {
             // Hold the last good correction rather than reverting to zero: a
@@ -978,6 +992,55 @@ mod tests {
         assert!(
             r1.estimate.expect("estimate") > 0.3,
             "the estimate itself is still published"
+        );
+    }
+
+    #[test]
+    fn a_disagreeing_peer_does_not_mask_the_warmup_hold() {
+        // Regression test for the first day in production: during warmup the
+        // closure slope is noise bounded by `anchor_error` while the peer
+        // regression is already sharp, so the two disagree by construction. The
+        // veto must not fire there — it would report the wrong reason for a
+        // correction that warmup is holding anyway, and page on a healthy pack.
+        let opts = Options {
+            peer_max_disagreement_amperes: 0.05,
+            peer_min_weight: 100.0,
+            // Everything else at production defaults, so the warmup gate is shut.
+            ..Options::default()
+        };
+        let mut cal = Calibrator::new(opts);
+        let (mut t, mut q1, mut q2) = (1_000_000.0, 20.0, 20.0);
+        for i in 0..(6 * 24 * 60) {
+            let true_a = 8.0 * (f64::from(i) * std::f64::consts::TAU / 360.0).sin();
+            t += 60.0;
+            // SN1 leaks 0.4 A that nothing reports: the closure blames its
+            // sensor, the peer regression sees two identical sensors.
+            q1 += (true_a - 0.4) * 60.0 / 3600.0;
+            q2 += true_a * 60.0 / 3600.0;
+            for (sn, q, skew) in [("SN1", q1, 0.0), ("SN2", q2, 1.0)] {
+                cal.observe(
+                    sn,
+                    Sample {
+                        current_a: true_a,
+                        balance_a: Some(0.0),
+                        remaining_ah: Some(q),
+                        capacity_ah: Some(40.0),
+                        now_secs: t + skew,
+                    },
+                );
+            }
+        }
+        let r = cal.report("SN1").expect("SN1");
+        assert_eq!(
+            r.hold,
+            Hold::Warmup,
+            "warmup is the binding gate and must be the reported one"
+        );
+        let peer = r.peer.expect("the peer report is still published");
+        assert!(
+            peer.disagreement > 0.05,
+            "the test is pointless unless the veto would otherwise have fired, got {}",
+            peer.disagreement
         );
     }
 

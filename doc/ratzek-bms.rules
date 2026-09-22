@@ -128,7 +128,14 @@ groups:
         # it is a hardware observation worth acting on, not just bookkeeping: at
         # that size the BMS's own SOC estimate is unusable (ratzek-2's pinned at
         # 100% for weeks), and the offset masks how the bank is really loaded.
-        expr: abs(daly_bms_current_offset_estimate_amperes) > 0.2
+        #
+        # Gated on hold==0, i.e. the estimate is actually being applied. Without
+        # that this fires during warmup on a perfectly healthy pack: the closure
+        # slope is then dominated by the state-of-charge excursion that
+        # anchor_error bounds (±1.6 A after a day on a 40 Ah pack), so it wanders
+        # well past 0.2 A before it means anything. Cost one false pending alert
+        # on 2026-09-22, the first day this shipped.
+        expr: abs(daly_bms_current_offset_estimate_amperes) > 0.2 and on(sn) daly_bms_calibration_hold == 0
         for: 24h
         labels: { severity: info }
         annotations:

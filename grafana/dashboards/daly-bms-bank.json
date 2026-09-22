@@ -1205,7 +1205,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+          "expr": "sum((sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]) - clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m] offset $__interval), 400) or sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m])))",
           "refId": "A",
           "legendFormat": "received",
           "interval": "1h"
@@ -1215,14 +1215,14 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "-sum(sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+          "expr": "-sum((sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]) - clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m] offset $__interval), 400) or sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m])))",
           "refId": "B",
           "legendFormat": "spent",
           "interval": "1h"
         }
       ],
       "interval": "1h",
-      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / 24 h / 30 d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty). Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Buckets are aligned to the Unix epoch (UTC), not to local midnight — read them as rolling 24 h / 30 d bins, not calendar days/months."
+      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / 24 h / 30 d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty). Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Buckets are aligned to the Unix epoch (UTC), not to local midnight — read them as rolling 24 h / 30 d bins, not calendar days/months. Each bar is the sum of clamped 20-minute increments inside its bucket. The trailing subtraction is load-bearing: a PromQL subquery [R:s] is inclusive of BOTH endpoints, so adjacent buckets would otherwise share their boundary sample and count it twice — +24% on an hourly bucket, measured against the raw counter delta on 2026-09-22. Do not simplify it away."
     },
     {
       "type": "timeseries",
@@ -1302,7 +1302,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+          "expr": "sum((sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]) - clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m] offset $__interval), 400) or sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m])))",
           "refId": "A",
           "legendFormat": "received",
           "interval": "1d"
@@ -1312,14 +1312,14 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "-sum(sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+          "expr": "-sum((sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]) - clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m] offset $__interval), 400) or sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m])))",
           "refId": "B",
           "legendFormat": "spent",
           "interval": "1d"
         }
       ],
       "interval": "1d",
-      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / 24 h / 30 d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty). Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Buckets are aligned to the Unix epoch (UTC), not to local midnight — read them as rolling 24 h / 30 d bins, not calendar days/months."
+      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / 24 h / 30 d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty). Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Buckets are aligned to the Unix epoch (UTC), not to local midnight — read them as rolling 24 h / 30 d bins, not calendar days/months. Each bar is the sum of clamped 20-minute increments inside its bucket. The trailing subtraction is load-bearing: a PromQL subquery [R:s] is inclusive of BOTH endpoints, so adjacent buckets would otherwise share their boundary sample and count it twice — +24% on an hourly bucket, measured against the raw counter delta on 2026-09-22. Do not simplify it away."
     },
     {
       "type": "timeseries",
@@ -1399,7 +1399,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+          "expr": "sum((sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]) - clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m] offset $__interval), 400) or sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m])))",
           "refId": "A",
           "legendFormat": "received",
           "interval": "30d"
@@ -1409,14 +1409,14 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "-sum(sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+          "expr": "-sum((sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]) - clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m] offset $__interval), 400) or sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m])))",
           "refId": "B",
           "legendFormat": "spent",
           "interval": "30d"
         }
       ],
       "interval": "30d",
-      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / 24 h / 30 d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty). Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Buckets are aligned to the Unix epoch (UTC), not to local midnight — read them as rolling 24 h / 30 d bins, not calendar days/months."
+      "description": "Bank total energy (sum across packs) integrated from measured power V×I. received=charge (green,up), spent=discharge (orange,down). No freshness gate: a brief telemetry gap won't blank a bar. Reset caveat: sum(increase()) inherits counter-reset artifacts (rare with persistence). Bar granularity is fixed (per hour / 24 h / 30 d) via min-interval; the panel FOLLOWS the dashboard time picker — widen the range to see more bars (a short range leaves the day/month panels near-empty). Summed from clamped 20-minute increments (cap 400 Wh / 15 Ah per pack per step), so a counter reset cannot spike the chart. Buckets are aligned to the Unix epoch (UTC), not to local midnight — read them as rolling 24 h / 30 d bins, not calendar days/months. Each bar is the sum of clamped 20-minute increments inside its bucket. The trailing subtraction is load-bearing: a PromQL subquery [R:s] is inclusive of BOTH endpoints, so adjacent buckets would otherwise share their boundary sample and count it twice — +24% on an hourly bucket, measured against the raw counter delta on 2026-09-22. Do not simplify it away."
     },
     {
       "type": "row",
@@ -2403,12 +2403,13 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "sum_over_time(clamp_max(increase(daly_bms_balance_amp_hours_total{battery=~\"$battery\"}[20m]), 5)[$__interval:20m])",
+              "expr": "(sum_over_time(clamp_max(increase(daly_bms_balance_amp_hours_total{battery=~\"$battery\"}[20m]), 5)[$__interval:20m]) - clamp_max(increase(daly_bms_balance_amp_hours_total{battery=~\"$battery\"}[20m] offset $__interval), 5) or sum_over_time(clamp_max(increase(daly_bms_balance_amp_hours_total{battery=~\"$battery\"}[20m]), 5)[$__interval:20m]))",
               "refId": "A",
               "legendFormat": "{{battery}}"
             }
           ],
-          "description": "Charge the passive balancer burns in its resistors. It enters through the current sensor and never comes back out, so it is a real part of the gap between energy in and energy out — in production 9–14% of throughput, which is most of what the raw counters showed as 'losses'."
+          "description": "Charge the passive balancer burns in its resistors. It enters through the current sensor and never comes back out, so it is a real part of the gap between energy in and energy out — in production 9–14% of throughput, which is most of what the raw counters showed as 'losses'. Each bar is the sum of clamped 20-minute increments inside its bucket. The trailing subtraction is load-bearing: a PromQL subquery [R:s] is inclusive of BOTH endpoints, so adjacent buckets would otherwise share their boundary sample and count it twice — +24% on an hourly bucket, measured against the raw counter delta on 2026-09-22. Do not simplify it away.",
+          "interval": "1d"
         },
         {
           "type": "timeseries",
@@ -2518,7 +2519,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+              "expr": "sum((sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]) - clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m] offset $__interval), 400) or sum_over_time(clamp_max(increase(daly_bms_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m])))",
               "refId": "A",
               "legendFormat": "in (raw)"
             },
@@ -2527,7 +2528,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "-sum(sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+              "expr": "-sum((sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]) - clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m] offset $__interval), 400) or sum_over_time(clamp_max(increase(daly_bms_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m])))",
               "refId": "B",
               "legendFormat": "out (raw)"
             },
@@ -2536,7 +2537,7 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "sum(sum_over_time(clamp_max(increase(daly_bms_calibrated_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+              "expr": "sum((sum_over_time(clamp_max(increase(daly_bms_calibrated_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]) - clamp_max(increase(daly_bms_calibrated_charge_watt_hours_total{battery=~\"$battery\"}[20m] offset $__interval), 400) or sum_over_time(clamp_max(increase(daly_bms_calibrated_charge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m])))",
               "refId": "C",
               "legendFormat": "in (calibrated)"
             },
@@ -2545,12 +2546,13 @@
                 "type": "prometheus",
                 "uid": "${DS_PROMETHEUS}"
               },
-              "expr": "-sum(sum_over_time(clamp_max(increase(daly_bms_calibrated_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]))",
+              "expr": "-sum((sum_over_time(clamp_max(increase(daly_bms_calibrated_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m]) - clamp_max(increase(daly_bms_calibrated_discharge_watt_hours_total{battery=~\"$battery\"}[20m] offset $__interval), 400) or sum_over_time(clamp_max(increase(daly_bms_calibrated_discharge_watt_hours_total{battery=~\"$battery\"}[20m]), 400)[$__interval:20m])))",
               "refId": "D",
               "legendFormat": "out (calibrated)"
             }
           ],
-          "description": "The payoff panel. While the correction is held the two pairs sit on top of each other; once it engages, the calibrated pair is the one whose books balance."
+          "description": "The payoff panel. While the correction is held the two pairs sit on top of each other; once it engages, the calibrated pair is the one whose books balance. Each bar is the sum of clamped 20-minute increments inside its bucket. The trailing subtraction is load-bearing: a PromQL subquery [R:s] is inclusive of BOTH endpoints, so adjacent buckets would otherwise share their boundary sample and count it twice — +24% on an hourly bucket, measured against the raw counter delta on 2026-09-22. Do not simplify it away.",
+          "interval": "1d"
         },
         {
           "type": "stat",

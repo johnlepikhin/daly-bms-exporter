@@ -156,7 +156,12 @@ against the unit tests' synthetic ramps.
 
 Energy panels sum *clamped* 20-minute increments rather than calling
 `increase()` over the whole window, so a counter reset cannot spike them —
-including resets already recorded in history. Prometheus alert rules are in
+including resets already recorded in history. The bucketed (per hour / per day /
+per 30 d) panels then subtract the increment at the bucket's left edge, because
+a PromQL subquery `[R:s]` is inclusive of **both** endpoints: without that,
+adjacent buckets share their boundary sample and count it twice. Measured
+against the raw counter delta, the hourly panel read 1947 Wh where the truth was
+1565 Wh. Do not simplify that subtraction away. Prometheus alert rules are in
 `doc/ratzek-bms.rules`; `make rules REMOTE=<host>` syncs and reloads them.
 
 ## Redirecting device traffic

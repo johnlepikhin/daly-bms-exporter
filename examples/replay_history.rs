@@ -152,7 +152,7 @@ fn main() {
     let names: Vec<String> = cal.devices().cloned().collect();
     for sn in names {
         let r = cal.report(&sn).expect("device just replayed");
-        let peer = r.peer.as_ref();
+        let peer = r.peers.first();
         println!(
             "{:<12} {:>+9.4} {:>+10.4} {:>8.4} {:>7.4} {:>9.1} {:>+6.3} {:>8.3}  {:?}",
             sn,
@@ -162,7 +162,7 @@ fn main() {
             r.r2.unwrap_or(f64::NAN),
             r.span_hours,
             peer.map_or(f64::NAN, |p| p.relative_offset),
-            peer.map_or(f64::NAN, |p| p.disagreement),
+            r.peer_disagreement.unwrap_or(f64::NAN),
             r.hold,
         );
     }

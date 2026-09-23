@@ -221,6 +221,16 @@ pub struct Options {
     pub peer_slope_tolerance: f64,
     /// Minimum R² for a peer fit to be consulted.
     pub peer_min_r2: f64,
+    /// How many peers a device may publish gauges for.
+    ///
+    /// Bounds cardinality: a fully-meshed bank would otherwise be `n·(n−1)`
+    /// series per family, which at `max_devices = 64` is over four thousand. The
+    /// published subset is chosen by serial, not by disagreement, so it does not
+    /// flap: picking "the worst peer" made the label change from scrape to
+    /// scrape, which broke every peer series into one- and two-point fragments
+    /// on the dashboard. The freeze decision below still considers *every*
+    /// qualifying peer, published or not.
+    pub peer_max_published: usize,
     /// Freeze the applied offset when the closure and peer estimates of the same
     /// pairwise difference disagree by more than this (amperes).
     pub peer_max_disagreement_amperes: f64,
@@ -243,6 +253,7 @@ impl Default for Options {
             peer_min_weight: 500.0,
             peer_slope_tolerance: 0.2,
             peer_min_r2: 0.8,
+            peer_max_published: 3,
             peer_max_disagreement_amperes: 0.25,
         }
     }
@@ -298,7 +309,7 @@ impl Hold {
     }
 }
 
-/// What the peer check concluded for one device: the worst-disagreeing pair.
+/// What the peer check concluded about one pair.
 #[derive(Debug, Clone)]
 pub struct PeerReport {
     pub peer_sn: String,
@@ -327,7 +338,12 @@ pub struct Report {
     pub anchor_error: f64,
     pub weight: f64,
     pub hold: Hold,
-    pub peer: Option<PeerReport>,
+    /// Qualifying peers whose gauges are published, ordered by serial and capped
+    /// at [`Options::peer_max_published`]. Stable across scrapes.
+    pub peers: Vec<PeerReport>,
+    /// Largest disagreement across *all* qualifying peers, including any the
+    /// publication cap left out. This is what the freeze decision uses.
+    pub peer_disagreement: Option<f64>,
 }
 
 /// Persisted per-device estimator state.
@@ -375,7 +391,8 @@ struct Live {
     /// Last raw reading, for pairing against peers.
     last_raw: Option<(f64, f64)>,
     hold: Hold,
-    peer: Option<PeerReport>,
+    peers: Vec<PeerReport>,
+    peer_disagreement: Option<f64>,
 }
 
 /// Per-pair scratch: when the pair fit was last aged.
@@ -564,10 +581,14 @@ impl Calibrator {
         // correction is held, and makes any alert on it fire on a healthy pack
         // that has simply not finished warming up — which is exactly what
         // happened on the first day in production.
-        let peer = self.peer_report(sn, fit.map(|f| f.slope));
+        let mut peers = self.peer_reports(sn, fit.map(|f| f.slope));
+        // Max over every qualifying peer, taken before the publication cap: a
+        // peer that does not fit on the dashboard must still be able to veto.
+        let peer_disagreement = peers.iter().map(|p| p.disagreement).max_by(f64::total_cmp);
+        peers.truncate(self.opts.peer_max_published);
         if hold == Hold::None
-            && let Some(p) = &peer
-            && p.disagreement > self.opts.peer_max_disagreement_amperes
+            && let Some(worst) = peer_disagreement
+            && worst > self.opts.peer_max_disagreement_amperes
         {
             // Hold the last good correction rather than reverting to zero: a
             // pack that has been calibrated for weeks is better served by a
@@ -581,13 +602,20 @@ impl Calibrator {
         }
         let live = self.live.entry(sn.to_string()).or_default();
         live.hold = hold;
-        live.peer = peer;
+        live.peers = peers;
+        live.peer_disagreement = peer_disagreement;
     }
 
-    /// Worst-disagreeing usable peer pair for `sn`, if any.
-    fn peer_report(&self, sn: &str, own_estimate: Option<f64>) -> Option<PeerReport> {
-        let own = own_estimate?;
-        let mut worst: Option<PeerReport> = None;
+    /// Every qualifying peer pair for `sn`, ordered by peer serial.
+    ///
+    /// Ordering by serial rather than by disagreement is what keeps the
+    /// published `{sn, peer}` series stable; the caller takes the max
+    /// disagreement over the whole list before truncating it.
+    fn peer_reports(&self, sn: &str, own_estimate: Option<f64>) -> Vec<PeerReport> {
+        let Some(own) = own_estimate else {
+            return Vec::new();
+        };
+        let mut out: Vec<PeerReport> = Vec::new();
         for other in self.state.devices.keys() {
             if other == sn {
                 continue;
@@ -618,19 +646,16 @@ impl Calibrator {
             else {
                 continue;
             };
-            let disagreement = (relative - (own - peer_estimate)).abs();
-            let report = PeerReport {
+            out.push(PeerReport {
                 peer_sn: other.clone(),
                 relative_offset: relative,
                 slope: f.slope,
                 r2: f.r2,
-                disagreement,
-            };
-            if worst.as_ref().is_none_or(|w| disagreement > w.disagreement) {
-                worst = Some(report);
-            }
+                disagreement: (relative - (own - peer_estimate)).abs(),
+            });
         }
-        worst
+        // `self.state.devices` is a BTreeMap, so this is already serial-ordered.
+        out
     }
 
     /// Everything the metrics layer needs to export for `sn`.
@@ -648,7 +673,8 @@ impl Calibrator {
             anchor_error: anchor_error(dev.capacity_ah, dev.span_hours, self.opts.tau_hours),
             weight: dev.fit.weight(),
             hold: live.map_or(Hold::Warmup, |l| l.hold),
-            peer: live.and_then(|l| l.peer.clone()),
+            peers: live.map(|l| l.peers.clone()).unwrap_or_default(),
+            peer_disagreement: live.and_then(|l| l.peer_disagreement),
         })
     }
 
@@ -925,7 +951,7 @@ mod tests {
             );
         }
         let r1 = cal.report("SN1").expect("SN1");
-        let peer = r1.peer.expect("SN1 must have found SN2");
+        let peer = r1.peers.first().expect("SN1 must have found SN2");
         assert_eq!(peer.peer_sn, "SN2");
         assert!((peer.slope - 1.0).abs() < 0.05, "slope {}", peer.slope);
         assert!(
@@ -1036,11 +1062,90 @@ mod tests {
             Hold::Warmup,
             "warmup is the binding gate and must be the reported one"
         );
-        let peer = r.peer.expect("the peer report is still published");
+        let peer = r.peers.first().expect("the peer report is still published");
         assert!(
             peer.disagreement > 0.05,
             "the test is pointless unless the veto would otherwise have fired, got {}",
             peer.disagreement
+        );
+    }
+
+    /// Drive three identical packs where only `SN3` leaks charge nothing
+    /// reports, and hand back the calibrator.
+    fn three_pack_bank(opts: Options) -> Calibrator {
+        let mut cal = Calibrator::new(opts);
+        let (mut t, mut q1, mut q2, mut q3) = (1_000_000.0, 20.0, 20.0, 20.0);
+        for i in 0..(6 * 24 * 60) {
+            let true_a = 8.0 * (f64::from(i) * std::f64::consts::TAU / 360.0).sin();
+            t += 60.0;
+            q1 += true_a * 60.0 / 3600.0;
+            q2 += true_a * 60.0 / 3600.0;
+            // SN3 loses 0.4 A that no balancer reading accounts for, so its
+            // closure estimate diverges while its sensor matches the others.
+            q3 += (true_a - 0.4) * 60.0 / 3600.0;
+            for (sn, q, skew) in [("SN1", q1, 0.0), ("SN2", q2, 1.0), ("SN3", q3, 2.0)] {
+                cal.observe(
+                    sn,
+                    Sample {
+                        current_a: true_a,
+                        balance_a: Some(0.0),
+                        remaining_ah: Some(q),
+                        capacity_ah: Some(40.0),
+                        now_secs: t + skew,
+                    },
+                );
+            }
+        }
+        cal
+    }
+
+    #[test]
+    fn every_qualifying_peer_is_published_in_serial_order() {
+        // The published set used to be "the worst-disagreeing peer", which made
+        // the {sn, peer} label flap from scrape to scrape and shattered the
+        // dashboard series into one- and two-point fragments.
+        let cal = three_pack_bank(fast_opts());
+        let r = cal.report("SN1").expect("SN1");
+        let names: Vec<&str> = r.peers.iter().map(|p| p.peer_sn.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["SN2", "SN3"],
+            "both peers must be published, ordered by serial"
+        );
+    }
+
+    #[test]
+    fn the_publication_cap_never_hides_a_veto() {
+        let opts = Options {
+            peer_max_published: 1,
+            ..fast_opts()
+        };
+        let cal = three_pack_bank(opts);
+        let r = cal.report("SN1").expect("SN1");
+
+        // The cap keeps the first peer by serial, which here is the one that
+        // agrees — deliberately, so the label cannot flap.
+        let names: Vec<&str> = r.peers.iter().map(|p| p.peer_sn.as_str()).collect();
+        assert_eq!(names, vec!["SN2"]);
+        assert!(
+            r.peers[0].disagreement < 0.1,
+            "SN2 agrees; got {}",
+            r.peers[0].disagreement
+        );
+
+        // But the disagreement that matters is SN3's, and it must still be
+        // reported and still veto the correction.
+        let worst = r
+            .peer_disagreement
+            .expect("a disagreement across all peers");
+        assert!(
+            worst > 0.3,
+            "the unpublished peer's disagreement must survive the cap, got {worst}"
+        );
+        assert_eq!(
+            r.hold,
+            Hold::PeerDisagreement,
+            "a peer left out of the published set must still be able to freeze"
         );
     }
 

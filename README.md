@@ -102,7 +102,9 @@ serial). Highlights:
   provably is), `daly_bms_calibration_hold` (0 applied, 1 warmup, 2 no fit,
   3 noisy, 4 peer disagreement), `daly_bms_calibration_span_hours`,
   `daly_bms_calibration_fit_r2`, and the parallel-peer cross-check
-  `daly_bms_calibration_peer_{offset_amperes,slope,r2,disagreement_amperes}{peer}`.
+  `daly_bms_calibration_peer_{offset_amperes,slope,r2,disagreement_amperes}{peer}`,
+  one set per qualifying peer (at most three, chosen by serial so the series
+  stay put across scrapes).
 - **Staleness** — `daly_bms_last_frame_timestamp_seconds`.
 - **Self-observability** — `daly_bms_http_requests_total{endpoint,status}`,
   `daly_bms_frames_decoded_total{block}`,
@@ -148,7 +150,9 @@ measures the difference of their zero errors with no loss term in it. Peers are
 discovered from the data — nothing declares the topology. The two estimates are
 *not* expected to match exactly (the charge balance also absorbs real losses the
 balancer under-reports; in production they sit ~50 mA apart), so the cross-check
-is tuned to catch gross breakage and freezes the correction when it trips.
+is tuned to catch gross breakage and freezes the correction when it trips. The
+freeze weighs *every* qualifying peer, including any the publication cap left
+off the dashboard.
 
 `examples/replay_history.rs` replays a Prometheus dump through the estimator, so
 a change to it can be checked against real recorded telemetry rather than only

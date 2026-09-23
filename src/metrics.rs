@@ -174,10 +174,10 @@ struct LastSeries {
     /// *at that endpoint*, so a moving offset never retroactively rewrites the
     /// interval before it changed.
     last_offset: Option<f64>,
-    /// Last `{sn, peer}` tuple written to the peer-check gauges, so the previous
-    /// series can be removed when the worst-disagreeing peer changes. Same
+    /// Peers whose `{sn, peer}` gauges currently exist, so a peer that stops
+    /// qualifying has its series removed instead of going stale. Same
     /// cardinality guard as `last_device_info`.
-    last_peer: Option<String>,
+    last_peers: Vec<String>,
     /// Deltas already integrated but NOT yet applied to the exported counters.
     /// They are applied only once the state file holding them has been durably
     /// written, so the file can never be behind what /metrics has served.
@@ -1096,9 +1096,11 @@ impl Metrics {
             if let Some(report) = report {
                 // Under the lock, like every other metric mutation here, so the
                 // published numbers cannot interleave with another frame's.
-                let stale_peer = entry.last_peer.clone();
-                entry.last_peer = report.peer.as_ref().map(|p| p.peer_sn.clone());
-                self.publish_calibration(sn, &report, stale_peer.as_deref());
+                let stale_peers = std::mem::replace(
+                    &mut entry.last_peers,
+                    report.peers.iter().map(|p| p.peer_sn.clone()).collect(),
+                );
+                self.publish_calibration(sn, &report, &stale_peers);
             }
         }
         if clamped {
@@ -1119,8 +1121,8 @@ impl Metrics {
     }
 
     /// Publish one device's calibration diagnostics, removing the peer-labelled
-    /// series of a peer that is no longer the worst-disagreeing one.
-    fn publish_calibration(&self, sn: &str, r: &Report, stale_peer: Option<&str>) {
+    /// series of any peer that no longer qualifies.
+    fn publish_calibration(&self, sn: &str, r: &Report, stale_peers: &[String]) {
         self.current_offset.with_label_values(&[sn]).set(r.applied);
         self.calibration_hold
             .with_label_values(&[sn])
@@ -1140,10 +1142,10 @@ impl Metrics {
             self.calibration_fit_r2.with_label_values(&[sn]).set(r2);
         }
 
-        let current_peer = r.peer.as_ref().map(|p| p.peer_sn.as_str());
-        if let Some(stale) = stale_peer
-            && current_peer != Some(stale)
-        {
+        for stale in stale_peers {
+            if r.peers.iter().any(|p| &p.peer_sn == stale) {
+                continue;
+            }
             for m in [
                 &self.calibration_peer_offset,
                 &self.calibration_peer_slope,
@@ -1153,7 +1155,7 @@ impl Metrics {
                 let _ = m.remove_label_values(&[sn, stale]);
             }
         }
-        if let Some(p) = &r.peer {
+        for p in &r.peers {
             let labels = [sn, p.peer_sn.as_str()];
             self.calibration_peer_offset
                 .with_label_values(&labels)
